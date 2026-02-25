@@ -1121,18 +1121,9 @@ function renderResultTableHeader(mode) {
       tr.appendChild(tdStudentId);
 
       const tdStudentName = document.createElement("td");
-      if (row.studentId) {
-        const btn = document.createElement("button");
-        btn.className = "link-button";
-        btn.type = "button";
-        btn.textContent = row.studentName || "-";
-        btn.addEventListener("click", () => openStudentEdit(row.studentId));
-        tdStudentName.appendChild(btn);
-        if (redFlagSet.has(String(row.studentId ?? "").trim())) {
-          appendRedFlagTag(tdStudentName, row.studentId);
-        }
-      } else {
-        tdStudentName.textContent = row.studentName || "-";
+      tdStudentName.textContent = row.studentName || "-";
+      if (row.studentId && redFlagSet.has(String(row.studentId ?? "").trim())) {
+        appendRedFlagTag(tdStudentName, row.studentId);
       }
       tr.appendChild(tdStudentName);
 
@@ -1405,18 +1396,9 @@ function renderResultTableHeader(mode) {
     tr.appendChild(tdStudentId);
 
       const tdStudentName = document.createElement("td");
-      if (row.studentId) {
-        const btn = document.createElement("button");
-        btn.className = "link-button";
-        btn.type = "button";
-        btn.textContent = row.studentName || "-";
-        btn.addEventListener("click", () => openStudentEdit(row.studentId));
-        tdStudentName.appendChild(btn);
-        if (redFlagSet.has(String(row.studentId ?? "").trim())) {
-          appendRedFlagTag(tdStudentName, row.studentId);
-        }
-      } else {
-        tdStudentName.textContent = row.studentName || "-";
+      tdStudentName.textContent = row.studentName || "-";
+      if (row.studentId && redFlagSet.has(String(row.studentId ?? "").trim())) {
+        appendRedFlagTag(tdStudentName, row.studentId);
       }
       tr.appendChild(tdStudentName);
 
@@ -6769,5 +6751,5 @@ Promise.resolve().then(async () => {
   await refreshCourses();
   await refreshResults();
   updateSlipConfirmStatus();
-  setActiveResultSubtab("overview");
+  setActiveResultSubtab("listing");
 });

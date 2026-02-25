@@ -18,9 +18,9 @@
         --surface-2: #f6f8fb;
         --ink: #101418;
         --muted: #5f6b7a;
-        --accent: #1d4ed8;
+        --accent: #ffffff;
         --accent-2: #0f766e;
-        --accent-wash: rgba(29, 78, 216, 0.08);
+        --accent-wash: rgba(255, 255, 255, 0.08);
         --accent-wash-2: rgba(15, 118, 110, 0.08);
         --border: rgba(16, 20, 24, 0.12);
         --shadow: 0 12px 28px rgba(16, 20, 24, 0.08);
@@ -37,13 +37,13 @@
         color: var(--ink);
         background: radial-gradient(circle at 10% 10%, var(--accent-wash), transparent 45%),
           radial-gradient(circle at 90% 12%, var(--accent-wash-2), transparent 40%),
-          radial-gradient(circle at 20% 85%, rgba(29, 78, 216, 0.06), transparent 50%),
+          radial-gradient(circle at 20% 85%, rgba(255, 255, 255, 0.06), transparent 50%),
           var(--bg);
         min-height: 100vh;
       }
 
       .shell {
-        max-width: 1240px;
+        max-width: 1440px;
         margin: 0 auto;
         padding: 32px 24px 64px;
         position: relative;
@@ -53,7 +53,7 @@
         content: "";
         position: absolute;
         inset: 0;
-        background: radial-gradient(circle at 65% 0%, rgba(29, 78, 216, 0.08), transparent 55%),
+        background: radial-gradient(circle at 65% 0%, rgba(255, 255, 255, 0.08), transparent 55%),
           radial-gradient(circle at 15% 35%, rgba(15, 118, 110, 0.08), transparent 45%);
         pointer-events: none;
         z-index: 0;
@@ -94,9 +94,9 @@
 
       .btn {
         appearance: none;
-        border: 1px solid transparent;
+        border: 1px solid var(--border);
         background: var(--accent);
-        color: #fff;
+        color: var(--ink);
         font-weight: 600;
         padding: 10px 18px;
         border-radius: 10px;
@@ -146,8 +146,8 @@
 
       .tab-btn.active {
         background: var(--accent);
-        color: #fff;
-        border-color: transparent;
+        color: var(--ink);
+        border-color: var(--accent-2);
       }
 
       .tab-panel {
@@ -196,6 +196,55 @@
 
       .card:hover::after {
         opacity: 1;
+      }
+
+      .info-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .info-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 13px;
+      }
+
+      .info-label {
+        color: var(--muted);
+      }
+
+      .info-value {
+        font-weight: 600;
+      }
+
+      .status-pill {
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      .status-pill.good {
+        background: rgba(34, 197, 94, 0.12);
+        border-color: rgba(34, 197, 94, 0.35);
+        color: #166534;
+      }
+
+      .status-pill.warn {
+        background: rgba(234, 179, 8, 0.12);
+        border-color: rgba(234, 179, 8, 0.35);
+        color: #92400e;
+      }
+
+      .status-pill.bad {
+        background: rgba(239, 68, 68, 0.12);
+        border-color: rgba(239, 68, 68, 0.35);
+        color: #b42318;
       }
 
       .stat {
@@ -462,7 +511,7 @@
         background: none;
         border: none;
         padding: 0;
-        color: var(--accent);
+        color: var(--accent-2);
         cursor: pointer;
         font: inherit;
       }
@@ -668,15 +717,15 @@
 
       .enrollment-course-item.selected .enrollment-key-label,
       .enrollment-course-item.selected .enrollment-key-btn {
-        color: rgba(255, 255, 255, 0.9);
-        border-color: rgba(255, 255, 255, 0.5);
-        background: rgba(255, 255, 255, 0.15);
+        color: var(--ink);
+        border-color: var(--border);
+        background: rgba(16, 20, 24, 0.06);
       }
 
       .enrollment-course-item.selected {
-        border-color: var(--accent);
+        border-color: var(--accent-2);
         background: var(--accent);
-        color: #fff;
+        color: var(--ink);
       }
 
       .enrollment-course-item strong {
@@ -692,6 +741,10 @@
       }
 
       .enrollment-course-item.selected span {
+        color: var(--muted);
+      }
+
+      .enrollment-course-item.priority.selected span {
         color: rgba(255, 255, 255, 0.86);
       }
 
@@ -835,8 +888,8 @@
 
       .filter-chip.active {
         background: var(--accent);
-        border-color: var(--accent);
-        color: #fff;
+        border-color: var(--accent-2);
+        color: var(--ink);
       }
 
       .flag-tag {
@@ -886,11 +939,12 @@
 
       .app-footer {
         margin-top: 40px;
-        padding: 18px 0 6px;
+        padding: 8px 0 6px;
         text-align: center;
         font-size: 12px;
-        color: var(--muted);
-        border-top: 1px solid var(--border);
+        background: #0b1020;
+        color: #fff;
+        border-top: none;
       }
 
       @media (max-width: 720px) {
@@ -1281,7 +1335,7 @@
       <header class="fade-up">
         <div>
           <h1 class="title">ODL Admin Portal</h1>
-          <p class="subtitle">Dashboard snapshot for students, courses, and engagement coverage.</p>
+          <p class="subtitle">Dashboard snapshot for students, courses, and database health.</p>
         </div>
         <div class="header-actions">
           <span class="chip" id="lastUpdated">Last updated: --</span>
@@ -1370,14 +1424,39 @@
             <div class="value" id="avgResultsPerStudent">--</div>
             <div class="trend">Across all students</div>
           </div>
+          <div class="card stat fade-up delay-4">
+            <h3>Average CGPA</h3>
+            <div class="value" id="avgCgpa">--</div>
+            <div class="trend">Calculated from results</div>
+          </div>
+          <div class="card stat fade-up delay-2">
+            <h3>Pass Rate</h3>
+            <div class="value" id="passRate">--</div>
+            <div class="trend">All recorded results</div>
+          </div>
 
-          <div class="card table-card fade-up delay-3">
+          <div class="card fade-up delay-2" style="grid-column: span 12;">
             <div class="card-title">
-              <h2>Overview</h2>
-              <span class="chip">Key metrics</span>
+              <h2>Database Health</h2>
+              <span class="chip">Status</span>
             </div>
-            <div class="muted">
-              Use the Courses tab to review coverage and student lists per course.
+            <div class="info-list">
+              <div class="info-row">
+                <span class="info-label">Database</span>
+                <span class="status-pill good" id="healthDb">Connected</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Last Update</span>
+                <span class="info-value" id="healthLastUpdate">--</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">DB Size</span>
+                <span class="info-value" id="healthDbSize">--</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">WAL Mode</span>
+                <span class="info-value" id="healthWalMode">--</span>
+              </div>
             </div>
           </div>
         </div>
@@ -1632,10 +1711,10 @@
 
       <section class="tab-panel" id="panel-results" role="tabpanel">
         <div class="tabs" role="tablist" aria-label="Results subtabs">
-          <button class="tab-btn active result-subtab-btn" type="button" role="tab" aria-selected="true" data-subtab="overview">
+          <button class="tab-btn result-subtab-btn" type="button" role="tab" aria-selected="false" data-subtab="overview">
             Overview
           </button>
-          <button class="tab-btn result-subtab-btn" type="button" role="tab" aria-selected="false" data-subtab="listing">
+          <button class="tab-btn active result-subtab-btn" type="button" role="tab" aria-selected="true" data-subtab="listing">
             Result Listing
           </button>
           <button class="tab-btn result-subtab-btn" type="button" role="tab" aria-selected="false" data-subtab="issues">
@@ -1643,7 +1722,7 @@
           </button>
         </div>
 
-        <div class="result-subtab-panel active" id="result-subtab-overview" role="tabpanel">
+        <div class="result-subtab-panel" id="result-subtab-overview" role="tabpanel">
           <div class="results-grid">
             <div class="card stat fade-up delay-1">
               <h3>Total Results</h3>
@@ -1668,7 +1747,7 @@
           </div>
         </div>
 
-        <div class="result-subtab-panel" id="result-subtab-listing" role="tabpanel">
+        <div class="result-subtab-panel active" id="result-subtab-listing" role="tabpanel">
           <div class="results-grid">
             <div class="card fade-up delay-2" style="grid-column: span 12;">
               <div class="card-title">
@@ -2422,6 +2501,6 @@
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
     <script type="module" src="./app/main.js"></script>
-    <footer class="app-footer">Copyright MFR 2026</footer>
+    <footer class="app-footer">Developed by MFR 2026</footer>
   </body>
 </html>
