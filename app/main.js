@@ -3,7 +3,13 @@ import { deleteCourse, listCourses, normalizeCourseCode, upsertCourse } from "./
 import { initImports } from "./modules/imports-ui.js";
 import { initStudentImport } from "./modules/student-import.js";
 import { computeStudentCgpa } from "./modules/stats.js";
-import { getGradeForMark } from "./modules/results.js";
+import {
+  defaultGradeScale,
+  getGradeForMark,
+  getSemesterForSession,
+  mpuGradeScale,
+  resequenceSemestersForStudents,
+} from "./modules/results.js";
 import { initBackup } from "./modules/backup.js";
 import { initPortalExport } from "./modules/portal-export.js";
 import { assignBalancedCourses } from "./modules/enrollment-optimizer.js";
@@ -61,10 +67,31 @@ const elStudentListEmpty = document.getElementById("studentListEmpty");
 const elStudentListSearch = document.getElementById("studentListSearch");
 const elStudentListIntake = document.getElementById("studentListIntake");
 const elStudentListStatus = document.getElementById("studentListStatus");
+const elStudentStatusFilters = document.getElementById("studentStatusFilters");
+const elStudentSelectionCount = document.getElementById("studentSelectionCount");
+const btnClearStudentSelection = document.getElementById("btnClearStudentSelection");
+const btnBulkSuspend = document.getElementById("btnBulkSuspend");
+const btnBulkActivate = document.getElementById("btnBulkActivate");
+const elStudentSelectAllPage = document.getElementById("studentSelectAllPage");
+const btnToggleSuspendMode = document.getElementById("btnToggleSuspendMode");
+const elStudentListCard = document.getElementById("studentListCard");
 const elStudentListPager = document.getElementById("studentListPager");
 const btnStudentListPrev = document.getElementById("btnStudentListPrev");
 const btnStudentListNext = document.getElementById("btnStudentListNext");
 const elStudentListPageMeta = document.getElementById("studentListPageMeta");
+const elStudentAddForm = document.getElementById("studentAddForm");
+const elStudentAddId = document.getElementById("studentAddId");
+const elStudentAddName = document.getElementById("studentAddName");
+const elStudentAddIc = document.getElementById("studentAddIc");
+const elStudentAddStatusSelect = document.getElementById("studentAddStatus");
+const elStudentAddIntake = document.getElementById("studentAddIntake");
+const elStudentAddStatusMessage = document.getElementById("studentAddStatusMessage");
+const btnStudentAdd = document.getElementById("btnStudentAdd");
+const btnStudentAddReset = document.getElementById("btnStudentAddReset");
+const elStudentAddAutoTempId = document.getElementById("studentAddAutoTempId");
+const elStudentAddModal = document.getElementById("studentAddModal");
+const btnOpenStudentAdd = document.getElementById("btnOpenStudentAdd");
+const btnCloseStudentAdd = document.getElementById("btnCloseStudentAdd");
 const elStudentProfileDrawer = document.getElementById("studentProfileDrawer");
 const btnCloseStudentProfile = document.getElementById("btnCloseStudentProfile");
 const elStudentProfileMeta = document.getElementById("studentProfileMeta");
@@ -73,6 +100,7 @@ const elStudentProfileSummary = document.getElementById("studentProfileSummary")
 const elStudentProfileStatus = document.getElementById("studentProfileStatus");
 const btnProfileResultSlip = document.getElementById("btnProfileResultSlip");
 const btnProfileEnrollmentSlip = document.getElementById("btnProfileEnrollmentSlip");
+const btnProfileRealign = document.getElementById("btnProfileRealign");
 const btnProfileEdit = document.getElementById("btnProfileEdit");
 const btnProfileDelete = document.getElementById("btnProfileDelete");
 const elDeletedStudentEmpty = document.getElementById("deletedStudentEmpty");
@@ -100,6 +128,8 @@ const elResultViewMode = document.getElementById("resultViewMode");
 const elResultTable = document.getElementById("resultTable");
 const elResultTableBody = document.getElementById("resultTableBody");
 const elResultTableEmpty = document.getElementById("resultTableEmpty");
+const btnExportResultsCsv = document.getElementById("btnExportResultsCsv");
+const btnExportResultsXlsx = document.getElementById("btnExportResultsXlsx");
 const elCourseDetailStats = document.getElementById("courseDetailStats");
 const elCourseDetailRecords = document.getElementById("courseDetailRecords");
 const elCourseDetailPassRate = document.getElementById("courseDetailPassRate");
@@ -113,7 +143,6 @@ const btnCloseStudentEdit = document.getElementById("btnCloseStudentEdit");
 const btnSaveStudentEdit = document.getElementById("btnSaveStudentEdit");
 const elEditStudentId = document.getElementById("editStudentId");
 const elEditStudentName = document.getElementById("editStudentName");
-const elEditStudentIc = document.getElementById("editStudentIc");
 const elEditStudentIntake = document.getElementById("editStudentIntake");
 const btnPrintSlip = document.getElementById("btnPrintSlip");
 const elResultSlipModal = document.getElementById("resultSlipModal");
@@ -231,6 +260,7 @@ const studentListPaging = {
   pageSize: 20,
 };
 const studentInlineStatusMessages = new Map();
+let activeStudentStatusFilter = "";
 let activeCourseDetailCode = "";
 let activeStudentEditId = "";
 let activeMarkEditId = "";
@@ -255,6 +285,10 @@ const studentIssueLists = {
   lowCgpa: [],
   resultIssues: [],
 };
+const bulkSelectedStudentIds = new Set();
+let currentStudentPageIds = [];
+let currentStudentFilteredIds = [];
+let isStudentSelectionMode = false;
 const CONFIRM_RESULT_KEY = "odlConfirmResultSlipsAt";
 const CONFIRM_ENROLL_KEY = "odlConfirmEnrollmentSlipsAt";
 const ENROLLMENT_CONFIRM_TOKEN_KEY = "odlConfirmEnrollmentSlipsToken";
@@ -874,6 +908,25 @@ function formatYearMonth(value, fallback = "-") {
   return raw;
 }
 
+function escapeCsv(value) {
+  const s = String(value ?? "");
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function downloadCsv(fileName, rows) {
+  const csv = rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function parseYearMonth(value) {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
@@ -883,6 +936,258 @@ function parseYearMonth(value) {
   const month = match[2].padStart(2, "0");
   if (!/^(02|09)$/.test(month)) return null;
   return { intake: `${year}/${month}`, year, month };
+}
+
+function getFutureSessions(count = 5, today = new Date()) {
+  const sessions = [];
+  const year = today.getFullYear();
+  const month = today.getMonth() + 1;
+  let nextYear = year;
+  let nextMonth;
+
+  if (month >= 2 && month <= 8) {
+    nextMonth = "09";
+  } else {
+    nextYear = month === 1 ? year : year + 1;
+    nextMonth = "02";
+  }
+
+  while (sessions.length < count) {
+    sessions.push(`${nextYear}/${nextMonth}`);
+    if (nextMonth === "02") {
+      nextMonth = "09";
+    } else {
+      nextMonth = "02";
+      nextYear += 1;
+    }
+  }
+
+  return sessions;
+}
+
+function getCurrentOrRecentSession(today = new Date()) {
+  const year = today.getFullYear();
+  const month = today.getMonth() + 1;
+  if (month >= 2 && month <= 8) {
+    return `${year}/02`;
+  }
+  if (month === 1) {
+    return `${year - 1}/09`;
+  }
+  return `${year}/09`;
+}
+
+function sessionSortValue(session) {
+  const parsed = parseYearMonth(session);
+  if (parsed) return Number(`${parsed.year}${parsed.month}`);
+  const normalized = formatYearMonth(session, "");
+  const match = normalized.match(/^(\d{4})\/(\d{2})$/);
+  if (match) return Number(`${match[1]}${match[2]}`);
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function collectSessionOptions() {
+  const sessions = new Set();
+  for (const row of resultState.results) {
+    const session = formatYearMonth(row?.session ?? "", "");
+    if (parseYearMonth(session)) sessions.add(session);
+  }
+  sessions.add(getCurrentOrRecentSession());
+  for (const future of getFutureSessions(5)) sessions.add(future);
+  return [...sessions].sort((a, b) => sessionSortValue(a) - sessionSortValue(b));
+}
+
+function populateAddResultSessionOptions(studentId) {
+  if (!elAddResultSession) return;
+  const currentSelection = String(elAddResultSession.value ?? "").trim();
+  const sessionsSet = new Set(collectSessionOptions());
+  const latest = getLatestSessionForStudent(studentId);
+  if (latest) sessionsSet.add(formatYearMonth(latest, ""));
+  if (currentSelection) sessionsSet.add(currentSelection);
+  const sessions = [...sessionsSet].filter(Boolean).sort((a, b) => sessionSortValue(a) - sessionSortValue(b));
+
+  elAddResultSession.textContent = "";
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = "Select session";
+  elAddResultSession.appendChild(defaultOption);
+
+  for (const session of sessions) {
+    const option = document.createElement("option");
+    option.value = session;
+    option.textContent = session;
+    elAddResultSession.appendChild(option);
+  }
+  if (currentSelection && sessionsSet.has(currentSelection)) {
+    elAddResultSession.value = currentSelection;
+    return;
+  }
+  if (latest && sessionsSet.has(formatYearMonth(latest, ""))) {
+    elAddResultSession.value = formatYearMonth(latest, "");
+    return;
+  }
+  const [next] = getFutureSessions(5);
+  if (next && sessionsSet.has(next)) {
+    elAddResultSession.value = next;
+  }
+}
+
+function showAddResultWarning(message) {
+  if (!elAddResultWarning) return;
+  elAddResultWarning.textContent = message || "";
+  elAddResultWarning.style.display = message ? "block" : "none";
+}
+
+function parseIntakeStrict(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const match = raw.match(/^(\d{4})\/(02|09)$/);
+  if (!match) return null;
+  const year = match[1];
+  const month = match[2];
+  return { intake: `${year}/${month}`, year, month };
+}
+
+const STUDENT_ID_FORMAT = /^\d{4}\.\d{2}\.?\d{3}\.(DBA\.ODL|ODL\.DBA)$/i;
+const TEMP_STUDENT_ID_FORMAT = /^T\.\d{4}\.\d{2}\.\d{3}\.(DBA\.ODL|ODL\.DBA)$/i;
+const STUDENT_ID_FORMAT_HINT =
+  "Student ID must match YYYY.MM.XXX.DBA.ODL, YYYY.MMXXX.DBA.ODL, or T.YYYY.MM.XXX.DBA.ODL (DBA/ODL order allowed).";
+const STUDENT_STATUS_OPTIONS = ["Active", "Suspended", "Terminated", "Deferment", "Completed"];
+const AUTO_COMPLETE_CREDITS = 90;
+const AUTO_COMPLETE_ELIGIBLE_STATUSES = new Set(["Active", "Deferment"]);
+
+function isStudentIdFormatAllowed(nextId, originalId = "") {
+  const normalizedNext = String(nextId ?? "").trim();
+  if (!normalizedNext) return false;
+  const normalizedOriginal = String(originalId ?? "").trim();
+  if (normalizedOriginal && normalizedNext === normalizedOriginal) return true;
+  return STUDENT_ID_FORMAT.test(normalizedNext) || TEMP_STUDENT_ID_FORMAT.test(normalizedNext);
+}
+
+function normalizeStudentStatus(value) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return "Active";
+  const match = STUDENT_STATUS_OPTIONS.find(
+    (option) => option.toLowerCase() === normalized.toLowerCase()
+  );
+  return match ?? "Active";
+}
+
+function setStudentSelection(studentId, selected) {
+  const normalizedId = String(studentId ?? "").trim();
+  if (!normalizedId) return;
+  if (selected) {
+    bulkSelectedStudentIds.add(normalizedId);
+  } else {
+    bulkSelectedStudentIds.delete(normalizedId);
+  }
+}
+
+function syncStudentSelectAllCheckbox() {
+  if (!elStudentSelectAllPage) return;
+  if (!isStudentSelectionMode) {
+    elStudentSelectAllPage.checked = false;
+    elStudentSelectAllPage.indeterminate = false;
+    return;
+  }
+  const pageIds = currentStudentPageIds.filter(Boolean);
+  if (!pageIds.length) {
+    elStudentSelectAllPage.checked = false;
+    elStudentSelectAllPage.indeterminate = false;
+    return;
+  }
+  const selectedCount = pageIds.filter((id) => bulkSelectedStudentIds.has(id)).length;
+  elStudentSelectAllPage.checked = selectedCount === pageIds.length;
+  elStudentSelectAllPage.indeterminate = selectedCount > 0 && selectedCount < pageIds.length;
+}
+
+function updateStudentSelectionUi() {
+  if (elStudentSelectionCount) {
+    elStudentSelectionCount.textContent = `${numberFmt.format(bulkSelectedStudentIds.size)} selected`;
+  }
+  const hasSelection = bulkSelectedStudentIds.size > 0;
+  if (btnClearStudentSelection) btnClearStudentSelection.disabled = !hasSelection;
+  if (btnBulkSuspend) btnBulkSuspend.disabled = !hasSelection;
+  if (btnBulkActivate) btnBulkActivate.disabled = !hasSelection;
+  if (elStudentSelectAllPage) elStudentSelectAllPage.disabled = !isStudentSelectionMode;
+  syncStudentSelectAllCheckbox();
+}
+
+async function applyBulkStudentStatus(status) {
+  const normalized = normalizeStudentStatus(status);
+  const ids = [...bulkSelectedStudentIds];
+  if (!ids.length) return;
+  const warningStatuses = new Set(["Suspended", "Terminated"]);
+  if (warningStatuses.has(normalized)) {
+    const ok = window.confirm(`Set ${ids.length} student(s) to ${normalized}?`);
+    if (!ok) return;
+  }
+  const updates = resultState.students
+    .filter((student) => ids.includes(String(student.studentId ?? "").trim()))
+    .map((student) => ({
+      ...student,
+      status: normalized,
+    }));
+  if (!updates.length) return;
+  try {
+    await upsertMany(STORES.students, updates);
+    await refreshResults();
+    await refreshStats();
+  } catch (e) {
+    console.error(e);
+    alert(`Failed to update status: ${e.message ?? e}`);
+  }
+}
+
+function setStudentSelectionMode(enabled) {
+  isStudentSelectionMode = Boolean(enabled);
+  if (!isStudentSelectionMode) bulkSelectedStudentIds.clear();
+  if (elStudentListCard) {
+    elStudentListCard.classList.toggle("selection-mode", isStudentSelectionMode);
+  }
+  if (btnToggleSuspendMode) {
+    btnToggleSuspendMode.textContent = isStudentSelectionMode ? "Exit Suspend Mode" : "Suspend Student";
+  }
+  updateStudentSelectionUi();
+  renderStudentList();
+}
+
+function computeCreditsEarnedMap(results, courses) {
+  const courseMap = new Map();
+  for (const course of courses) {
+    const code = normalizeCourseCode(course.courseCode ?? "");
+    if (code) courseMap.set(code, course);
+  }
+  const creditsMap = new Map();
+  for (const row of results) {
+    const studentId = String(row.studentId ?? "").trim();
+    if (!studentId) continue;
+    const course = courseMap.get(normalizeCourseCode(row.courseCode ?? ""));
+    const credits = toNumber(course?.credits);
+    if (credits === null) continue;
+    let earned = toNumber(row.creditsEarned ?? row.credits_earned);
+    if (earned === null) earned = isFailedResult(row) ? 0 : credits;
+    creditsMap.set(studentId, (creditsMap.get(studentId) ?? 0) + earned);
+  }
+  return creditsMap;
+}
+
+function applyAutoCompletedStatus(students, courses, results) {
+  const creditsMap = computeCreditsEarnedMap(results, courses);
+  const updates = [];
+  const updatedStudents = students.map((student) => {
+    const studentId = String(student.studentId ?? "").trim();
+    if (!studentId) return student;
+    const earned = creditsMap.get(studentId) ?? 0;
+    const status = normalizeStudentStatus(student.status);
+    if (earned >= AUTO_COMPLETE_CREDITS && AUTO_COMPLETE_ELIGIBLE_STATUSES.has(status)) {
+      const updated = { ...student, status: "Completed" };
+      updates.push(updated);
+      return updated;
+    }
+    return student;
+  });
+  return { students: updatedStudents, updates };
 }
 
 function isFailedResult(result) {
@@ -959,7 +1264,6 @@ async function reconcileStudentsFromResults(students, results) {
     toInsert.set(studentId, {
       studentId,
       name: nameFromResult,
-      ic: "",
       intake: "",
       intakeYear: "",
       intakeMonth: "",
@@ -1184,6 +1488,31 @@ function renderResultTableHeader(mode) {
         btnSlip.textContent = "Open Slip";
         btnSlip.addEventListener("click", () => openSlip(row.studentId));
         actions.appendChild(btnSlip);
+        const btnRealign = document.createElement("button");
+        btnRealign.className = "btn secondary small";
+        btnRealign.type = "button";
+        btnRealign.textContent = "Realign Semesters";
+        btnRealign.addEventListener("click", async () => {
+          if (!row.studentId) return;
+          const originalText = btnRealign.textContent;
+          btnRealign.textContent = "Realigning...";
+          btnRealign.disabled = true;
+          try {
+            const result = await resequenceSemestersForStudents([row.studentId]);
+            await refreshResults();
+            await refreshStats();
+            activeResultInlineId = row.studentId;
+            renderResultsView();
+            const conflicts = result.conflictCount ? ` (${result.conflictCount} conflict(s) skipped)` : "";
+            alert(`Semesters realigned. Updated ${result.updatedCount} record(s).${conflicts}`);
+          } catch (e) {
+            alert(`Failed to realign: ${e.message ?? e}`);
+          } finally {
+            btnRealign.textContent = originalText;
+            btnRealign.disabled = false;
+          }
+        });
+        actions.appendChild(btnRealign);
         header.appendChild(actions);
         panel.appendChild(header);
 
@@ -1208,6 +1537,7 @@ function renderResultTableHeader(mode) {
         panel.appendChild(summary);
 
         if (!studentResults.length) {
+          btnRealign.disabled = true;
           const empty = document.createElement("div");
           empty.className = "muted";
           empty.textContent = "No results recorded for this student yet.";
@@ -1492,7 +1822,6 @@ function buildSlip(studentId) {
   tbody.appendChild(row1);
 
   const row2 = document.createElement("tr");
-  row2.appendChild(makeCell("IC", student.ic ?? "-"));
   row2.appendChild(makeCell("Intake", formatYearMonth(student.intake)));
   tbody.appendChild(row2);
 
@@ -1786,6 +2115,35 @@ function populateResultFilters() {
   if (currentSession) elResultSessionSelect.value = currentSession;
 }
 
+function getFilteredResultsForExport() {
+  const studentMap = buildStudentMap();
+  const courseMap = buildCourseMap();
+  const search = elResultSearch?.value?.trim().toLowerCase() ?? "";
+  const intakeFilter = formatYearMonth(elResultSessionSelect?.value ?? "", "");
+  const filtered = resultState.results.filter((row) => {
+    const studentId = String(row.studentId ?? "").trim();
+    if (intakeFilter) {
+      const student = studentMap.get(studentId);
+      const intake = formatYearMonth(student?.intake ?? "", "");
+      if (intake !== intakeFilter) return false;
+    }
+    if (activeCourseDetailCode) {
+      const courseCode = normalizeCourseCode(row.courseCode ?? "");
+      if (courseCode !== activeCourseDetailCode) return false;
+    }
+    if (search) {
+      const student = studentMap.get(studentId);
+      const courseCode = normalizeCourseCode(row.courseCode ?? "");
+      const course = courseMap.get(courseCode);
+      const label = `${student?.studentId ?? ""} ${student?.name ?? ""} ${courseCode} ${course?.title ?? ""}`
+        .toLowerCase();
+      if (!label.includes(search)) return false;
+    }
+    return true;
+  });
+  return { filtered, studentMap, courseMap };
+}
+
 function renderResultsView() {
   const studentMap = buildStudentMap();
   const courseMap = buildCourseMap();
@@ -1993,6 +2351,103 @@ function renderResultsView() {
   }
 }
 
+function exportResultsCsv() {
+  const { header, rows } = buildResultExportRows();
+  if (!rows.length) return;
+  const stamp = new Date().toISOString().slice(0, 10);
+  downloadCsv(`results-export-${stamp}.csv`, [header, ...rows]);
+}
+
+function buildResultExportRows() {
+  const { filtered, studentMap, courseMap } = getFilteredResultsForExport();
+  if (!filtered.length) {
+    alert("No results to export for the current filters.");
+    return { header: [], rows: [] };
+  }
+
+  const header = [
+    "StudentID",
+    "StudentName",
+    "IntakeYear",
+    "IntakeMonth",
+    "CourseCode",
+    "CourseTitle",
+    "Credits",
+    "Mark",
+    "Grade",
+    "Session",
+    "Semester",
+  ];
+
+  const rows = filtered.map((row) => {
+    const studentId = String(row.studentId ?? "").trim();
+    const student = studentMap.get(studentId);
+    const name = String(student?.name ?? row.studentName ?? "").trim();
+    let intakeYear = String(student?.intakeYear ?? "").trim();
+    let intakeMonth = String(student?.intakeMonth ?? "").trim();
+    if ((!intakeYear || !intakeMonth) && student?.intake) {
+      const parsed = parseYearMonth(student.intake);
+      if (parsed) {
+        if (!intakeYear) intakeYear = parsed.year;
+        if (!intakeMonth) intakeMonth = parsed.month;
+      }
+    }
+    const courseCode = normalizeCourseCode(row.courseCode ?? "");
+    const course = courseMap.get(courseCode);
+    const session = formatYearMonth(row.session ?? "", "");
+    const semester = row.semester ?? "";
+    return [
+      studentId,
+      name,
+      intakeYear,
+      intakeMonth,
+      courseCode,
+      course?.title ?? "",
+      course?.credits ?? "",
+      row.mark ?? "",
+      row.letter ?? "",
+      session,
+      semester,
+    ];
+  });
+
+  return { header, rows };
+}
+
+function exportResultsXlsx() {
+  const { header, rows } = buildResultExportRows();
+  if (!rows.length) return;
+  if (!window.XLSX) {
+    alert("XLSX export library not loaded.");
+    return;
+  }
+  const sheet = window.XLSX.utils.aoa_to_sheet([header, ...rows]);
+  const book = window.XLSX.utils.book_new();
+  window.XLSX.utils.book_append_sheet(book, sheet, "Results");
+
+  const gradeHeader = ["Type", "MinMark", "Letter", "Point", "Passed"];
+  const gradeRows = [
+    ...defaultGradeScale.map((row) => [
+      "Non-MPU",
+      row.min,
+      row.letter,
+      row.point,
+      row.passed ? "Yes" : "No",
+    ]),
+    ...mpuGradeScale.map((row) => [
+      "MPU",
+      row.min,
+      row.letter,
+      row.point,
+      row.passed ? "Yes" : "No",
+    ]),
+  ];
+  const gradeSheet = window.XLSX.utils.aoa_to_sheet([gradeHeader, ...gradeRows]);
+  window.XLSX.utils.book_append_sheet(book, gradeSheet, "Grade Scale");
+  const stamp = new Date().toISOString().slice(0, 10);
+  window.XLSX.writeFile(book, `results-export-${stamp}.xlsx`);
+}
+
 function sortResultRows(rows) {
   const sortKey = resultSortState.key;
   if (!sortKey) return rows;
@@ -2026,7 +2481,6 @@ function openStudentEdit(studentId) {
   activeStudentEditId = studentId;
   elEditStudentId.value = studentId;
   elEditStudentName.value = student.name ?? "";
-  elEditStudentIc.value = student.ic ?? "";
   elEditStudentIntake.value = formatYearMonth(student.intake, "");
   elStudentEditModal.classList.add("active");
   elStudentEditModal.setAttribute("aria-hidden", "false");
@@ -2209,16 +2663,21 @@ function getLatestSessionForStudent(studentId) {
   return best;
 }
 
-function getNextSemesterForStudent(studentId) {
-  const id = String(studentId ?? "").trim();
-  if (!id) return 1;
-  let maxSem = 0;
-  for (const row of resultState.results) {
-    if (String(row.studentId ?? "").trim() !== id) continue;
-    const sem = toNumber(row.semester);
-    if (sem !== null && sem > maxSem) maxSem = sem;
+function updateAddResultSemesterAuto() {
+  if (!elAddResultSemester) return null;
+  const studentId = String(activeAddResultStudentId ?? "").trim();
+  const sessionRaw = String(elAddResultSession?.value ?? "").trim();
+  if (!studentId || !sessionRaw) {
+    elAddResultSemester.value = "";
+    return null;
   }
-  return maxSem + 1;
+  const semesterValue = getSemesterForSession(studentId, sessionRaw, resultState.results);
+  if (!semesterValue) {
+    elAddResultSemester.value = "";
+    return null;
+  }
+  elAddResultSemester.value = String(semesterValue);
+  return semesterValue;
 }
 
 function updateAddResultComputed() {
@@ -2327,10 +2786,11 @@ function openAddResultModal(studentId) {
   }
   populateAddResultCourseOptions("");
   if (elAddResultSession) {
-    elAddResultSession.value = getLatestSessionForStudent(id) || "";
+    populateAddResultSessionOptions(id);
   }
   if (elAddResultSemester) {
-    elAddResultSemester.value = String(getNextSemesterForStudent(id));
+    elAddResultSemester.readOnly = true;
+    updateAddResultSemesterAuto();
   }
   if (elAddResultMark) elAddResultMark.value = "";
   if (elAddResultVerify) elAddResultVerify.checked = false;
@@ -2362,6 +2822,11 @@ async function refreshResults() {
   ]);
   students = await reconcileStudentsFromResults(students, results);
   results = await backfillResultNamesFromStudents(students, results);
+  const autoUpdate = applyAutoCompletedStatus(students, courses, results);
+  if (autoUpdate.updates.length) {
+    await upsertMany(STORES.students, autoUpdate.updates);
+    students = autoUpdate.students;
+  }
   const previousRevision = enrollmentDataRevision || localStorage.getItem(ENROLLMENT_DATA_REVISION_KEY) || "";
 
   resultState.students = students;
@@ -2774,7 +3239,6 @@ function getEnrollmentStudents() {
       studentId,
       name: "",
       intake: "",
-      ic: "",
     });
   }
   return [...studentMap.values()].sort((a, b) => {
@@ -3113,14 +3577,13 @@ function buildStudentListReport({ resetPage = true } = {}) {
     return {
       StudentID: studentId,
       Name: String(student.name ?? "").trim(),
-      IC: String(student.ic ?? "").trim(),
       Intake: formatYearMonth(student.intake, ""),
       "Taken Credit": `(${numberFmt.format(takenCredits)}/${ENROLLMENT_TARGET_CREDITS})`,
       RedFlag: redFlagSet.has(studentId) ? "Yes" : "No",
     };
   });
 
-  reportColumns = ["StudentID", "Name", "IC", "Intake", "Taken Credit", "RedFlag"];
+  reportColumns = ["StudentID", "Name", "Intake", "Taken Credit", "RedFlag"];
   reportRows = rows;
   if (resetPage) reportPaging.page = 1;
   renderReportPreview();
@@ -4698,11 +5161,96 @@ function populateStudentListFilters(students) {
   if (current) elStudentListIntake.value = current;
 }
 
+function setActiveStudentStatusFilter(value) {
+  activeStudentStatusFilter = String(value ?? "").trim();
+  if (!elStudentStatusFilters) return;
+  elStudentStatusFilters.querySelectorAll(".filter-chip").forEach((btn) => {
+    const isActive = String(btn.dataset.status ?? "") === activeStudentStatusFilter;
+    btn.classList.toggle("active", isActive);
+  });
+}
+
+function collectExistingStudentIds() {
+  const ids = new Set();
+  for (const student of resultState.students) {
+    const id = String(student.studentId ?? "").trim();
+    if (id) ids.add(id);
+  }
+  for (const row of resultState.results) {
+    const id = String(row.studentId ?? "").trim();
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+function buildTempStudentId(intakeRaw) {
+  const parsedIntake = intakeRaw ? parseIntakeStrict(intakeRaw) : null;
+  const now = new Date();
+  const year = parsedIntake?.year ?? String(now.getFullYear());
+  const month = parsedIntake?.month ?? String(now.getMonth() + 1).padStart(2, "0");
+  const prefix = `T.${year}.${month}.`;
+  const suffix = ".DBA.ODL";
+  const existing = collectExistingStudentIds();
+
+  for (let i = 1; i <= 999; i += 1) {
+    const seq = String(i).padStart(3, "0");
+    const candidate = `${prefix}${seq}${suffix}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  return "";
+}
+
+function resetStudentAddForm() {
+  if (elStudentAddForm) elStudentAddForm.reset();
+  if (elStudentAddStatusMessage) elStudentAddStatusMessage.textContent = " ";
+  if (btnStudentAdd) btnStudentAdd.disabled = false;
+  if (elStudentAddAutoTempId) elStudentAddAutoTempId.checked = false;
+  if (elStudentAddId) elStudentAddId.disabled = false;
+  if (elStudentAddStatusSelect) elStudentAddStatusSelect.value = "Active";
+}
+
+function validateStudentAddForm() {
+  if (!elStudentAddStatusMessage) return true;
+  const nextId = String(elStudentAddId?.value ?? "").trim();
+  const nextName = String(elStudentAddName?.value ?? "").trim();
+  const intakeRaw = String(elStudentAddIntake?.value ?? "").trim();
+  let message = "";
+  let valid = true;
+
+  if (!nextId) {
+    message = "Student ID is required.";
+    valid = false;
+  } else if (!isStudentIdFormatAllowed(nextId)) {
+    message = STUDENT_ID_FORMAT_HINT;
+    valid = false;
+  } else if (
+    resultState.students.some((s) => String(s.studentId ?? "").trim() === nextId)
+  ) {
+    message = "Student ID already exists. Please use a unique ID.";
+    valid = false;
+  } else if (
+    resultState.results.some((row) => String(row.studentId ?? "").trim() === nextId)
+  ) {
+    message = "Student ID already exists in results. Please use a unique ID.";
+    valid = false;
+  } else if (!nextName) {
+    message = "Student name is required.";
+    valid = false;
+  } else if (intakeRaw && !parseIntakeStrict(intakeRaw)) {
+    message = "Intake must be in YYYY/MM format (month 02 or 09).";
+    valid = false;
+  }
+
+  elStudentAddStatusMessage.textContent = message || " ";
+  if (btnStudentAdd) btnStudentAdd.disabled = !valid;
+  return valid;
+}
+
 async function saveStudentEdits({
   originalId,
   nextId,
   nextName,
-  nextIc,
+  nextStatus,
   intakeRaw,
   statusEl,
 }) {
@@ -4719,14 +5267,18 @@ async function saveStudentEdits({
     return false;
   }
 
-  const parsedIntake = intakeRaw ? parseYearMonth(intakeRaw) : null;
+  const normalizedOriginal = String(originalId ?? "").trim();
+  const normalizedNext = String(nextId ?? "").trim();
+  if (!isStudentIdFormatAllowed(normalizedNext, normalizedOriginal)) {
+    setStatus(STUDENT_ID_FORMAT_HINT);
+    return false;
+  }
+
+  const parsedIntake = intakeRaw ? parseIntakeStrict(intakeRaw) : null;
   if (intakeRaw && !parsedIntake) {
     setStatus("Intake must be in YYYY/MM format (month 02 or 09).");
     return false;
   }
-
-  const normalizedOriginal = String(originalId ?? "").trim();
-  const normalizedNext = String(nextId ?? "").trim();
   if (
     normalizedNext !== normalizedOriginal
     && resultState.students.some((s) => String(s.studentId ?? "").trim() === normalizedNext)
@@ -4754,7 +5306,7 @@ async function saveStudentEdits({
     ...existing,
     studentId: normalizedNext,
     name: nextName,
-    ic: nextIc,
+    status: normalizeStudentStatus(nextStatus ?? existing.status),
     intake: parsedIntake ? parsedIntake.intake : "",
     intakeYear: parsedIntake ? parsedIntake.year : "",
     intakeMonth: parsedIntake ? parsedIntake.month : "",
@@ -4897,6 +5449,7 @@ function renderStudentProfile() {
     if (elStudentProfileStatus) elStudentProfileStatus.textContent = "--";
     if (btnProfileResultSlip) btnProfileResultSlip.disabled = true;
     if (btnProfileEnrollmentSlip) btnProfileEnrollmentSlip.disabled = true;
+    if (btnProfileRealign) btnProfileRealign.disabled = true;
     if (btnProfileEdit) btnProfileEdit.disabled = true;
     if (btnProfileDelete) btnProfileDelete.disabled = true;
     renderDeletedStudentsList();
@@ -4935,9 +5488,29 @@ function renderStudentProfile() {
     return field;
   };
 
+  const buildSelectField = (label, id, value) => {
+    const field = document.createElement("div");
+    field.className = "field";
+    const labelEl = document.createElement("label");
+    labelEl.setAttribute("for", id);
+    labelEl.textContent = label;
+    const select = document.createElement("select");
+    select.id = id;
+    for (const option of STUDENT_STATUS_OPTIONS) {
+      const opt = document.createElement("option");
+      opt.value = option;
+      opt.textContent = option;
+      select.appendChild(opt);
+    }
+    select.value = normalizeStudentStatus(value);
+    field.appendChild(labelEl);
+    field.appendChild(select);
+    return field;
+  };
+
   form.appendChild(buildField("Student ID", "profileStudentId", student.studentId ?? ""));
   form.appendChild(buildField("Name", "profileStudentName", student.name ?? "", true));
-  form.appendChild(buildField("IC", "profileStudentIc", student.ic ?? ""));
+  form.appendChild(buildSelectField("Status", "profileStudentStatus", student.status ?? "Active"));
   form.appendChild(
     buildField("Intake (YYYY/MM)", "profileStudentIntake", formatYearMonth(student.intake, ""))
   );
@@ -4953,8 +5526,8 @@ function renderStudentProfile() {
 
   const elId = document.getElementById("profileStudentId");
   const elName = document.getElementById("profileStudentName");
-  const elIc = document.getElementById("profileStudentIc");
   const elIntake = document.getElementById("profileStudentIntake");
+  const elStatus = document.getElementById("profileStudentStatus");
 
   const validateProfileInputs = () => {
     if (!editStatus) return true;
@@ -4967,6 +5540,9 @@ function renderStudentProfile() {
     if (!nextId) {
       message = "Student ID is required.";
       valid = false;
+    } else if (!isStudentIdFormatAllowed(nextId, activeProfileStudentId)) {
+      message = STUDENT_ID_FORMAT_HINT;
+      valid = false;
     } else if (
       nextId !== String(activeProfileStudentId ?? "").trim()
       && resultState.students.some((s) => String(s.studentId ?? "").trim() === nextId)
@@ -4976,7 +5552,7 @@ function renderStudentProfile() {
     } else if (!nextName) {
       message = "Student name is required.";
       valid = false;
-    } else if (nextIntake && !parseYearMonth(nextIntake)) {
+    } else if (nextIntake && !parseIntakeStrict(nextIntake)) {
       message = "Intake must be in YYYY/MM format (month 02 or 09).";
       valid = false;
     }
@@ -4989,6 +5565,7 @@ function renderStudentProfile() {
   if (elId) elId.addEventListener("input", validateProfileInputs);
   if (elName) elName.addEventListener("input", validateProfileInputs);
   if (elIntake) elIntake.addEventListener("input", validateProfileInputs);
+  if (elStatus) elStatus.addEventListener("change", validateProfileInputs);
 
   validateProfileInputs();
 
@@ -5017,6 +5594,7 @@ function renderStudentProfile() {
   }
   if (btnProfileResultSlip) btnProfileResultSlip.disabled = !activeProfileStudentId;
   if (btnProfileEnrollmentSlip) btnProfileEnrollmentSlip.disabled = !activeProfileStudentId;
+  if (btnProfileRealign) btnProfileRealign.disabled = !activeProfileStudentId || !hasResults;
   if (btnProfileEdit) btnProfileEdit.disabled = !activeProfileStudentId;
   if (btnProfileDelete) btnProfileDelete.disabled = hasResults;
 
@@ -5033,6 +5611,21 @@ function openStudentProfile(studentId) {
 function closeStudentProfile() {
   activeStudentInlineId = "";
   renderStudentList();
+}
+
+function openStudentAddModal() {
+  if (!elStudentAddModal) return;
+  resetStudentAddForm();
+  validateStudentAddForm();
+  elStudentAddModal.classList.add("active");
+  elStudentAddModal.setAttribute("aria-hidden", "false");
+  queueMicrotask(() => elStudentAddId?.focus());
+}
+
+function closeStudentAddModal() {
+  if (!elStudentAddModal) return;
+  elStudentAddModal.classList.remove("active");
+  elStudentAddModal.setAttribute("aria-hidden", "true");
 }
 
 function refreshEnrollmentModule() {
@@ -5192,16 +5785,19 @@ function renderCourseList(courses) {
 
   const search = String(elStudentListSearch?.value ?? "").trim().toLowerCase();
   const intakeFilter = formatYearMonth(elStudentListIntake?.value ?? "", "");
-  const statusFilter = String(elStudentListStatus?.value ?? "").trim();
-  const hasFilters = Boolean(search || intakeFilter || statusFilter);
+  const resultStatusFilter = String(elStudentListStatus?.value ?? "").trim();
+  const statusFilter = String(activeStudentStatusFilter ?? "").trim();
+  const hasFilters = Boolean(search || intakeFilter || resultStatusFilter || statusFilter);
 
   const filtered = students.filter((student) => {
     const studentId = String(student.studentId ?? "").trim();
     const name = String(student.name ?? "").trim();
     const intake = formatYearMonth(student.intake, "");
+    const studentStatus = normalizeStudentStatus(student.status);
     if (intakeFilter && intake !== intakeFilter) return false;
-    if (statusFilter === "new" && studentsWithResults.has(studentId)) return false;
-    if (statusFilter === "has-results" && !studentsWithResults.has(studentId)) return false;
+    if (resultStatusFilter === "new" && studentsWithResults.has(studentId)) return false;
+    if (resultStatusFilter === "has-results" && !studentsWithResults.has(studentId)) return false;
+    if (statusFilter && studentStatus !== statusFilter) return false;
     if (search) {
       const label = `${studentId} ${name}`.toLowerCase();
       if (!label.includes(search)) return false;
@@ -5214,6 +5810,9 @@ function renderCourseList(courses) {
     elStudentListTable.style.display = "none";
     elStudentListEmpty.style.display = "block";
     if (elStudentListPager) elStudentListPager.style.display = "none";
+    currentStudentFilteredIds = [];
+    currentStudentPageIds = [];
+    updateStudentSelectionUi();
     return;
   }
 
@@ -5225,6 +5824,9 @@ function renderCourseList(courses) {
       : "No students yet. Import results or students to begin.";
     elStudentListEmpty.style.display = "block";
     if (elStudentListPager) elStudentListPager.style.display = "none";
+    currentStudentFilteredIds = [];
+    currentStudentPageIds = [];
+    updateStudentSelectionUi();
     return;
   }
 
@@ -5232,10 +5834,16 @@ function renderCourseList(courses) {
   elStudentListTable.style.display = "table";
   elStudentListBody.textContent = "";
 
+  currentStudentFilteredIds = filtered
+    .map((student) => String(student.studentId ?? "").trim())
+    .filter(Boolean);
   const totalPages = Math.max(1, Math.ceil(filtered.length / studentListPaging.pageSize));
   if (studentListPaging.page > totalPages) studentListPaging.page = totalPages;
   const startIndex = (studentListPaging.page - 1) * studentListPaging.pageSize;
   const pageRows = filtered.slice(startIndex, startIndex + studentListPaging.pageSize);
+  currentStudentPageIds = pageRows
+    .map((student) => String(student.studentId ?? "").trim())
+    .filter(Boolean);
 
   if (elStudentListPager) elStudentListPager.style.display = "flex";
   if (elStudentListPageMeta) {
@@ -5247,6 +5855,20 @@ function renderCourseList(courses) {
   for (const student of pageRows) {
     const studentId = String(student.studentId ?? "").trim();
     const tr = document.createElement("tr");
+
+    const tdSelect = document.createElement("td");
+    tdSelect.className = "student-select-col";
+    if (studentId && isStudentSelectionMode) {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = bulkSelectedStudentIds.has(studentId);
+      checkbox.addEventListener("change", () => {
+        setStudentSelection(studentId, checkbox.checked);
+        updateStudentSelectionUi();
+      });
+      tdSelect.appendChild(checkbox);
+    }
+    tr.appendChild(tdSelect);
 
     const tdId = document.createElement("td");
     tdId.textContent = studentId || "-";
@@ -5268,6 +5890,15 @@ function renderCourseList(courses) {
         }
         if (redFlagSet.has(studentId)) {
           appendRedFlagTag(tdName, studentId);
+        }
+        const statusLabel = normalizeStudentStatus(student.status);
+        const visibleStatuses = new Set(["Suspended", "Completed", "Deferment"]);
+        if (visibleStatuses.has(statusLabel)) {
+          const statusTag = document.createElement("span");
+          statusTag.className = "chip status-chip";
+          statusTag.textContent = statusLabel;
+          if (statusLabel === "Suspended") statusTag.classList.add("suspended");
+          tdName.appendChild(statusTag);
         }
       } else {
         tdName.textContent = String(student.name ?? "").trim() || "-";
@@ -5326,13 +5957,29 @@ function renderCourseList(courses) {
 
       const idField = buildField("Student ID", student.studentId ?? "");
       const nameField = buildField("Name", student.name ?? "", true);
-      const icField = buildField("IC", student.ic ?? "");
       const intakeField = buildField("Intake (YYYY/MM)", formatYearMonth(student.intake, ""));
+      const statusField = (() => {
+        const field = document.createElement("div");
+        field.className = "field";
+        const labelEl = document.createElement("label");
+        labelEl.textContent = "Status";
+        const select = document.createElement("select");
+        for (const option of STUDENT_STATUS_OPTIONS) {
+          const opt = document.createElement("option");
+          opt.value = option;
+          opt.textContent = option;
+          select.appendChild(opt);
+        }
+        select.value = normalizeStudentStatus(student.status);
+        field.appendChild(labelEl);
+        field.appendChild(select);
+        return { field, select };
+      })();
 
       form.appendChild(idField.field);
       form.appendChild(nameField.field);
-      form.appendChild(icField.field);
       form.appendChild(intakeField.field);
+      form.appendChild(statusField.field);
       wrapper.appendChild(form);
 
       const status = document.createElement("div");
@@ -5392,6 +6039,9 @@ function renderCourseList(courses) {
         if (!nextId) {
           message = "Student ID is required.";
           valid = false;
+        } else if (!isStudentIdFormatAllowed(nextId, studentId)) {
+          message = STUDENT_ID_FORMAT_HINT;
+          valid = false;
         } else if (
           nextId !== studentId
           && resultState.students.some((s) => String(s.studentId ?? "").trim() === nextId)
@@ -5407,7 +6057,7 @@ function renderCourseList(courses) {
         } else if (!nextName) {
           message = "Student name is required.";
           valid = false;
-        } else if (nextIntake && !parseYearMonth(nextIntake)) {
+        } else if (nextIntake && !parseIntakeStrict(nextIntake)) {
           message = "Intake must be in YYYY/MM format (month 02 or 09).";
           valid = false;
         }
@@ -5427,7 +6077,7 @@ function renderCourseList(courses) {
           originalId: studentId,
           nextId: String(idField.input.value ?? "").trim(),
           nextName: String(nameField.input.value ?? "").trim(),
-          nextIc: String(icField.input.value ?? "").trim(),
+          nextStatus: String(statusField.select.value ?? "").trim(),
           intakeRaw: String(intakeField.input.value ?? "").trim(),
           statusEl: status,
         });
@@ -5448,6 +6098,7 @@ function renderCourseList(courses) {
       });
     }
   }
+  updateStudentSelectionUi();
 }
 
 function updateSlipConfirmStatus() {
@@ -5588,8 +6239,8 @@ async function refreshStats() {
     const totalStudents = activeStudents.length;
     for (const student of activeStudents) {
       const id = String(student.studentId ?? "").trim();
-      const ic = String(student.ic ?? "").trim();
-      if (!id || !ic) {
+      const name = String(student.name ?? "").trim();
+      if (!id || !name) {
         if (id) {
           incompleteStudents.add(id);
         } else {
@@ -5641,7 +6292,6 @@ async function refreshStats() {
       return {
         studentId,
         name: student.name ?? "",
-        ic: student.ic ?? "",
         intake: student.intake ?? "",
       };
     };
@@ -5650,7 +6300,7 @@ async function refreshStats() {
     studentIssueLists.incomplete = [
       ...incompleteStudents,
       ...Array.from({ length: incompleteCount }, () => ""),
-    ].map((id) => (id ? getStudentRecord(id) : { studentId: "", name: "", ic: "", intake: "" }));
+    ].map((id) => (id ? getStudentRecord(id) : { studentId: "", name: "", intake: "" }));
     studentIssueLists.lowCgpa = [...lowCgpaStudents].map(getStudentRecord);
     studentIssueLists.resultIssues = [...resultIssueStudents].map(getStudentRecord);
 
@@ -5745,12 +6395,9 @@ function renderIssueList(type) {
       appendRedFlagTag(tdName, student.studentId);
     }
     tr.appendChild(tdName);
-    const tdIc = document.createElement("td");
-    tdIc.textContent = student.ic || "-";
-    tr.appendChild(tdIc);
-      const tdIntake = document.createElement("td");
-      tdIntake.textContent = formatYearMonth(student.intake);
-      tr.appendChild(tdIntake);
+    const tdIntake = document.createElement("td");
+    tdIntake.textContent = formatYearMonth(student.intake);
+    tr.appendChild(tdIntake);
     const tdAction = document.createElement("td");
     const btnView = document.createElement("button");
     btnView.className = "btn secondary small";
@@ -6053,6 +6700,18 @@ if (btnReportDownload) {
   });
 }
 
+if (btnExportResultsCsv) {
+  btnExportResultsCsv.addEventListener("click", () => {
+    exportResultsCsv();
+  });
+}
+
+if (btnExportResultsXlsx) {
+  btnExportResultsXlsx.addEventListener("click", () => {
+    exportResultsXlsx();
+  });
+}
+
 if (btnReportPrev) {
   btnReportPrev.addEventListener("click", () => {
     if (reportPaging.page > 1) {
@@ -6132,9 +6791,8 @@ if (btnSaveStudentEdit) {
   btnSaveStudentEdit.addEventListener("click", async () => {
     if (!activeStudentEditId) return;
     const nextName = elEditStudentName.value.trim();
-    const nextIc = elEditStudentIc.value.trim();
     const intakeRaw = String(elEditStudentIntake.value ?? "").trim();
-    const parsedIntake = intakeRaw ? parseYearMonth(intakeRaw) : null;
+    const parsedIntake = intakeRaw ? parseIntakeStrict(intakeRaw) : null;
     if (!nextName) {
       alert("Student name is required.");
       return;
@@ -6154,7 +6812,6 @@ if (btnSaveStudentEdit) {
       ...existing,
       studentId: activeStudentEditId,
       name: nextName,
-      ic: nextIc,
       intake: parsedIntake ? parsedIntake.intake : "",
       intakeYear: parsedIntake ? parsedIntake.year : "",
       intakeMonth: parsedIntake ? parsedIntake.month : "",
@@ -6185,21 +6842,44 @@ if (btnProfileEnrollmentSlip) {
   });
 }
 
+if (btnProfileRealign) {
+  btnProfileRealign.addEventListener("click", async () => {
+    if (!activeProfileStudentId) return;
+    if (elStudentProfileStatus) {
+      elStudentProfileStatus.textContent = "Re-aligning semesters...";
+    }
+    try {
+      const result = await resequenceSemestersForStudents([activeProfileStudentId]);
+      await refreshResults();
+      await refreshStats();
+      renderStudentProfile();
+      if (elStudentProfileStatus) {
+        const conflicts = result.conflictCount ? ` (${result.conflictCount} conflict(s) skipped)` : "";
+        elStudentProfileStatus.textContent = `Semesters realigned. Updated ${result.updatedCount} record(s).${conflicts}`;
+      }
+    } catch (e) {
+      if (elStudentProfileStatus) {
+        elStudentProfileStatus.textContent = `Failed to realign: ${e.message ?? e}`;
+      }
+    }
+  });
+}
+
 if (btnProfileEdit) {
   btnProfileEdit.addEventListener("click", async () => {
     if (!activeProfileStudentId) return;
     const elId = document.getElementById("profileStudentId");
     const elName = document.getElementById("profileStudentName");
-    const elIc = document.getElementById("profileStudentIc");
     const elIntake = document.getElementById("profileStudentIntake");
+    const elStatus = document.getElementById("profileStudentStatus");
     const elEditStatus = document.getElementById("studentProfileEditStatus");
-    if (!elId || !elName || !elIc || !elIntake) return;
+    if (!elId || !elName || !elIntake || !elStatus) return;
 
     const nextId = String(elId.value ?? "").trim();
     const nextName = String(elName.value ?? "").trim();
-    const nextIc = String(elIc.value ?? "").trim();
     const intakeRaw = String(elIntake.value ?? "").trim();
-    const parsedIntake = intakeRaw ? parseYearMonth(intakeRaw) : null;
+    const nextStatus = normalizeStudentStatus(elStatus.value);
+    const parsedIntake = intakeRaw ? parseIntakeStrict(intakeRaw) : null;
 
     if (!nextId) {
       if (elEditStatus) elEditStatus.textContent = "Student ID is required.";
@@ -6237,7 +6917,7 @@ if (btnProfileEdit) {
       ...existing,
       studentId: nextId,
       name: nextName,
-      ic: nextIc,
+      status: nextStatus,
       intake: parsedIntake ? parsedIntake.intake : "",
       intakeYear: parsedIntake ? parsedIntake.year : "",
       intakeMonth: parsedIntake ? parsedIntake.month : "",
@@ -6336,6 +7016,109 @@ if (elStudentListSearch) {
   });
 }
 
+if (elStudentAddId) {
+  elStudentAddId.addEventListener("input", validateStudentAddForm);
+}
+
+if (elStudentAddName) {
+  elStudentAddName.addEventListener("input", validateStudentAddForm);
+}
+
+if (elStudentAddAutoTempId) {
+  elStudentAddAutoTempId.addEventListener("change", () => {
+    if (!elStudentAddId) return;
+    if (elStudentAddAutoTempId.checked) {
+      const nextId = buildTempStudentId(String(elStudentAddIntake?.value ?? "").trim());
+      if (nextId) {
+        elStudentAddId.value = nextId;
+        elStudentAddId.disabled = true;
+        if (elStudentAddStatusMessage) elStudentAddStatusMessage.textContent = "Temporary ID generated.";
+      } else if (elStudentAddStatusMessage) {
+        elStudentAddStatusMessage.textContent = "Unable to generate a temporary ID.";
+      }
+    } else {
+      elStudentAddId.disabled = false;
+      if (elStudentAddStatusMessage) elStudentAddStatusMessage.textContent = " ";
+    }
+    validateStudentAddForm();
+  });
+}
+
+if (elStudentAddIntake) {
+  elStudentAddIntake.addEventListener("input", () => {
+    validateStudentAddForm();
+    if (elStudentAddAutoTempId?.checked && elStudentAddId && !elStudentAddId.disabled) {
+      elStudentAddId.disabled = true;
+    }
+    if (elStudentAddAutoTempId?.checked && elStudentAddId) {
+      const nextId = buildTempStudentId(String(elStudentAddIntake.value ?? "").trim());
+      if (nextId) elStudentAddId.value = nextId;
+    }
+  });
+}
+
+if (btnStudentAddReset) {
+  btnStudentAddReset.addEventListener("click", () => {
+    resetStudentAddForm();
+    validateStudentAddForm();
+  });
+}
+
+if (elStudentAddForm) {
+  elStudentAddForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!validateStudentAddForm()) return;
+    const nextId = String(elStudentAddId?.value ?? "").trim();
+    const nextName = String(elStudentAddName?.value ?? "").trim();
+    const nextIc = String(elStudentAddIc?.value ?? "").trim();
+    const nextStatus = normalizeStudentStatus(elStudentAddStatusSelect?.value);
+    const intakeRaw = String(elStudentAddIntake?.value ?? "").trim();
+    const parsedIntake = intakeRaw ? parseIntakeStrict(intakeRaw) : null;
+
+    const newStudent = {
+      studentId: nextId,
+      name: nextName,
+      ic: nextIc,
+      status: nextStatus,
+      intake: parsedIntake ? parsedIntake.intake : "",
+      intakeYear: parsedIntake ? parsedIntake.year : "",
+      intakeMonth: parsedIntake ? parsedIntake.month : "",
+      isDeleted: false,
+    };
+
+    try {
+      await upsertMany(STORES.students, [newStudent]);
+      resetStudentAddForm();
+      if (elStudentAddStatusMessage) elStudentAddStatusMessage.textContent = "Student added.";
+      if (elStudentAddId) elStudentAddId.focus();
+      await refreshResults();
+      await refreshStats();
+    } catch (e) {
+      if (elStudentAddStatusMessage) {
+        elStudentAddStatusMessage.textContent = `Failed to add student: ${e.message ?? e}`;
+      }
+    }
+  });
+}
+
+if (btnOpenStudentAdd) {
+  btnOpenStudentAdd.addEventListener("click", () => {
+    openStudentAddModal();
+  });
+}
+
+if (btnCloseStudentAdd) {
+  btnCloseStudentAdd.addEventListener("click", () => {
+    closeStudentAddModal();
+  });
+}
+
+if (elStudentAddModal) {
+  elStudentAddModal.addEventListener("click", (event) => {
+    if (event.target === elStudentAddModal) closeStudentAddModal();
+  });
+}
+
 if (elStudentListIntake) {
   elStudentListIntake.addEventListener("change", () => {
     studentListPaging.page = 1;
@@ -6349,6 +7132,55 @@ if (elStudentListStatus) {
     studentListPaging.page = 1;
     activeStudentInlineId = "";
     renderStudentList();
+  });
+}
+
+if (elStudentStatusFilters) {
+  elStudentStatusFilters.querySelectorAll(".filter-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setActiveStudentStatusFilter(btn.dataset.status ?? "");
+      studentListPaging.page = 1;
+      activeStudentInlineId = "";
+      renderStudentList();
+    });
+  });
+}
+
+if (elStudentSelectAllPage) {
+  elStudentSelectAllPage.addEventListener("change", () => {
+    if (!isStudentSelectionMode) return;
+    const shouldSelect = elStudentSelectAllPage.checked;
+    for (const id of currentStudentPageIds) {
+      setStudentSelection(id, shouldSelect);
+    }
+    updateStudentSelectionUi();
+    renderStudentList();
+  });
+}
+
+if (btnClearStudentSelection) {
+  btnClearStudentSelection.addEventListener("click", () => {
+    bulkSelectedStudentIds.clear();
+    updateStudentSelectionUi();
+    renderStudentList();
+  });
+}
+
+if (btnBulkSuspend) {
+  btnBulkSuspend.addEventListener("click", () => {
+    applyBulkStudentStatus("Suspended");
+  });
+}
+
+if (btnBulkActivate) {
+  btnBulkActivate.addEventListener("click", () => {
+    applyBulkStudentStatus("Active");
+  });
+}
+
+if (btnToggleSuspendMode) {
+  btnToggleSuspendMode.addEventListener("click", () => {
+    setStudentSelectionMode(!isStudentSelectionMode);
   });
 }
 
@@ -6481,6 +7313,7 @@ if (btnConfirmAddResult) {
 
     try {
       await upsertMany(STORES.results, [result]);
+      await resequenceSemestersForStudents([studentId]);
       closeAddResultModal();
       activeResultInlineId = studentId;
       await refreshResults();
@@ -6501,7 +7334,8 @@ if (elAddResultCourse) {
 }
 
 if (elAddResultSession) {
-  elAddResultSession.addEventListener("input", () => {
+  elAddResultSession.addEventListener("change", () => {
+    updateAddResultSemesterAuto();
     validateAddResultInputs();
   });
 }
@@ -6511,6 +7345,7 @@ if (elAddResultSemester) {
     validateAddResultInputs();
   });
 }
+
 
 if (elAddResultMark) {
   elAddResultMark.addEventListener("input", () => {

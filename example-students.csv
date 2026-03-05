@@ -1,4 +1,4 @@
-StudentID,Name,IC,Intake
-ODL10001,Aisyah Ahmad,900101-14-1234,2025/02
-ODL10002,Benjamin Lee,881212-10-5678,2025/09
-ODL10003,Chong Wei,,2026/02
+StudentID,Name,Intake
+ODL10001,Aisyah Ahmad,2025/02
+ODL10002,Benjamin Lee,2025/09
+ODL10003,Chong Wei,2026/02

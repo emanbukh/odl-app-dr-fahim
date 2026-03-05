@@ -88,6 +88,22 @@ export async function deleteRecord(storeName, key) {
   });
 }
 
+export async function replaceMany(storeName, deletes = [], records = []) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, "readwrite");
+    const store = transaction.objectStore(storeName);
+
+    for (const key of deletes) {
+      if (key !== null && key !== undefined) store.delete(key);
+    }
+    for (const rec of records) store.put(rec);
+
+    transaction.oncomplete = () => resolve(true);
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
 export async function getCounts() {
   const [students, courses, results] = await Promise.all([
     countStore(STORES.students),

@@ -1,5 +1,5 @@
 // app/modules/results.js
-import { getAllRecords, upsertMany, STORES } from "../db/db.js";
+import { getAllRecords, replaceMany, upsertMany, STORES } from "../db/db.js";
 import { computeStudentCgpa } from "./stats.js";
 import { normalizeCourseCode } from "./course.js";
 
@@ -28,6 +28,24 @@ function toNumberOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function parseSessionForOrder(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const match = raw.match(/^(\d{4})[./-](\d{1,2})$/);
+  if (!match) return null;
+  const year = match[1];
+  const month = match[2].padStart(2, "0");
+  const monthNum = Number(month);
+  if (!Number.isFinite(monthNum) || monthNum < 1 || monthNum > 12) return null;
+  return { intake: `${year}/${month}`, year, month, value: Number(`${year}${month}`) };
+}
+
+function normalizeSessionKey(value) {
+  const parsed = parseSessionForOrder(value);
+  if (parsed) return parsed.intake;
+  return String(value ?? "").trim();
+}
+
 function normalizeKey(key) {
   return String(key ?? "")
     .toLowerCase()
@@ -35,12 +53,18 @@ function normalizeKey(key) {
 }
 
 function normalizePersonName(value) {
-  return String(value ?? "")
+  const normalized = String(value ?? "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  if (!normalized) return "";
+  const skipTokens = new Set(["bin", "binti", "bt", "bte", "binti", "binte"]);
+  const filtered = normalized
+    .split(" ")
+    .filter((token) => token && !skipTokens.has(token));
+  return filtered.join(" ").trim();
 }
 
 function parseSlipSnapshot(value) {
@@ -86,7 +110,7 @@ function getRowValue(row, keys) {
   return "";
 }
 
-const defaultGradeScale = [
+export const defaultGradeScale = [
   { min: 90, letter: "A+", point: 4.0, passed: true },
   { min: 80, letter: "A", point: 4.0, passed: true },
   { min: 75, letter: "A-", point: 3.67, passed: true },
@@ -100,7 +124,7 @@ const defaultGradeScale = [
   { min: 0, letter: "F", point: 0.0, passed: false },
 ];
 
-const mpuGradeScale = [
+export const mpuGradeScale = [
   { min: 75, letter: "A", point: 4.0, passed: true },
   { min: 65, letter: "B", point: 3.0, passed: true },
   { min: 50, letter: "C", point: 2.0, passed: true },
@@ -121,6 +145,133 @@ function gradeFromMark(markValue, gradeScale = defaultGradeScale) {
 export function getGradeForMark(markValue, isMPU) {
   const scale = isMPU ? mpuGradeScale : defaultGradeScale;
   return gradeFromMark(markValue, scale);
+}
+
+export function getSemesterForSession(studentId, session, allResults = null) {
+  const id = String(studentId ?? "").trim();
+  const parsedTarget = parseSessionForOrder(session);
+  if (!id || !parsedTarget) return null;
+  const results = allResults ?? [];
+  const sessionValueMap = new Map();
+
+  for (const row of results) {
+    if (String(row?.studentId ?? "").trim() !== id) continue;
+    const parsed = parseSessionForOrder(row?.session);
+    if (!parsed) continue;
+    sessionValueMap.set(parsed.intake, parsed.value);
+  }
+
+  sessionValueMap.set(parsedTarget.intake, parsedTarget.value);
+  const ordered = [...sessionValueMap.entries()].sort((a, b) => a[1] - b[1]);
+  if (!ordered.length) return 1;
+  const index = ordered.findIndex(([key]) => key === parsedTarget.intake);
+  if (index < 0) return null;
+  return index + 1;
+}
+
+export async function resequenceSemestersForStudents(studentIds, allResults = null) {
+  const normalizedIds = [...new Set(
+    (studentIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean)
+  )];
+  if (!normalizedIds.length) {
+    return { updatedCount: 0, conflictCount: 0, students: [] };
+  }
+
+  const results = allResults ?? (await getAllRecords(STORES.results));
+  const resultsByStudent = new Map();
+  for (const row of results) {
+    const studentId = String(row?.studentId ?? "").trim();
+    if (!studentId) continue;
+    const entry = resultsByStudent.get(studentId) ?? [];
+    entry.push(row);
+    resultsByStudent.set(studentId, entry);
+  }
+
+  const candidates = [];
+  const updatedStudents = new Set();
+
+  for (const studentId of normalizedIds) {
+    const rows = resultsByStudent.get(studentId) ?? [];
+    if (!rows.length) continue;
+
+    const sessionValueMap = new Map();
+    for (const row of rows) {
+      const sessionKey = normalizeSessionKey(row?.session);
+      if (!sessionKey) continue;
+      const parsed = parseSessionForOrder(row?.session);
+      if (parsed) sessionValueMap.set(sessionKey, parsed.value);
+    }
+
+    const orderedSessions = [...sessionValueMap.entries()]
+      .filter(([, value]) => Number.isFinite(value))
+      .sort((a, b) => a[1] - b[1]);
+    if (!orderedSessions.length) continue;
+
+    const sessionToSemester = new Map();
+    orderedSessions.forEach(([key], index) => {
+      sessionToSemester.set(key, index + 1);
+    });
+
+    for (const row of rows) {
+      const sessionKey = normalizeSessionKey(row?.session);
+      if (!sessionKey || !sessionToSemester.has(sessionKey)) continue;
+      const nextSemester = sessionToSemester.get(sessionKey);
+      const currentSemester = toNumberOrNull(row?.semester);
+      if (currentSemester === nextSemester) continue;
+
+      const sessionRaw = String(row?.session ?? "").trim();
+      const courseCode = String(row?.courseCode ?? "").trim();
+      const studentIdRaw = String(row?.studentId ?? "").trim();
+      if (!sessionRaw || !courseCode || !studentIdRaw) continue;
+
+      const next = {
+        ...row,
+        semester: nextSemester,
+        resultId: `${studentIdRaw}|${courseCode}|${sessionRaw}|${nextSemester}`,
+      };
+      candidates.push({ oldId: row?.resultId, next });
+      updatedStudents.add(studentIdRaw);
+    }
+  }
+
+  if (!candidates.length) {
+    return { updatedCount: 0, conflictCount: 0, students: [] };
+  }
+
+  const existingIds = new Set(
+    results.map((row) => String(row?.resultId ?? "").trim()).filter(Boolean)
+  );
+  const deleteSet = new Set(
+    candidates.map((c) => String(c.oldId ?? "").trim()).filter(Boolean)
+  );
+  const finalDeletes = [];
+  const finalRecords = [];
+  const newIdSet = new Set();
+  let conflictCount = 0;
+
+  for (const candidate of candidates) {
+    const oldId = String(candidate?.oldId ?? "").trim();
+    const nextId = String(candidate?.next?.resultId ?? "").trim();
+    if (!oldId || !nextId) continue;
+    if (newIdSet.has(nextId)) {
+      conflictCount += 1;
+      continue;
+    }
+    if (existingIds.has(nextId) && !deleteSet.has(nextId)) {
+      conflictCount += 1;
+      continue;
+    }
+    newIdSet.add(nextId);
+    finalDeletes.push(oldId);
+    finalRecords.push(candidate.next);
+  }
+
+  if (!finalRecords.length) {
+    return { updatedCount: 0, conflictCount, students: [] };
+  }
+
+  await replaceMany(STORES.results, finalDeletes, finalRecords);
+  return { updatedCount: finalRecords.length, conflictCount, students: [...updatedStudents] };
 }
 
 /**
@@ -147,7 +298,6 @@ function mapRow(rawRow) {
   const student = {
     studentId,
     name: getNameValue(row),
-    ic: String(getRowValue(row, ["ic", "icno", "nric", "nricno"])).trim(),
     intake: intakeRaw,
     intakeYear: String(getRowValue(row, ["intakeyear", "intakeyr"])).trim(),
     intakeMonth: String(getRowValue(row, ["intakemonth", "intakemo"])).trim(),
@@ -200,7 +350,6 @@ function mapStudentOnlyRow(rawRow) {
   return {
     studentId,
     name: getNameValue(row),
-    ic: String(getRowValue(row, ["ic", "icno", "nric", "nricno"])).trim(),
     intake: intakeRaw,
     intakeYear: String(getRowValue(row, ["intakeyear", "intakeyr"])).trim(),
     intakeMonth: String(getRowValue(row, ["intakemonth", "intakemo"])).trim(),
@@ -422,6 +571,14 @@ async function parseNewResults({
   ]);
 
   const studentMap = new Map(students.map((s) => [String(s.studentId ?? "").trim(), s]));
+  const studentsByName = new Map();
+  for (const student of students) {
+    const nameKey = normalizePersonName(student?.name);
+    if (!nameKey) continue;
+    const entry = studentsByName.get(nameKey) ?? [];
+    entry.push(student);
+    studentsByName.set(nameKey, entry);
+  }
   const courseMap = new Map(
     courses.map((c) => [normalizeCourseCode(c.courseCode ?? ""), c])
   );
@@ -451,6 +608,27 @@ async function parseNewResults({
   let skippedMissing = 0;
   let skippedMismatch = 0;
   const mismatchedExisting = [];
+  const issueRows = [];
+  const issueSummary = {
+    missing_mark: 0,
+    missing_identifier: 0,
+    name_not_found: 0,
+    name_ambiguous: 0,
+    name_mismatch: 0,
+  };
+
+  const addIssueRow = ({ rowNo, studentId, name, mark, reason, reasonCode }) => {
+    issueRows.push({
+      rowNo,
+      studentId: studentId ?? "",
+      name: name ?? "",
+      mark: mark ?? "",
+      reason,
+    });
+    if (reasonCode && reasonCode in issueSummary) {
+      issueSummary[reasonCode] += 1;
+    }
+  };
 
   for (let index = 0; index < parsed.data.length; index += 1) {
     const rawRow = parsed.data[index];
@@ -459,15 +637,72 @@ async function parseNewResults({
       row[normalizeKey(key)] = rawRow[key];
     }
 
-    const studentId = String(getRowValue(row, ["id", "studentid", "studentno"])).trim();
+    const studentIdRaw = String(getRowValue(row, ["id", "studentid", "studentno"])).trim();
     const name = getNameValue(row);
+    const nameKey = normalizePersonName(name);
     const courseCodeFinal = fixedCourseCode;
     const markValue = getRowValue(row, ["mark", "score"]);
     const mark = toNumberOrNull(markValue);
 
-    if (!studentId || !courseCodeFinal || mark === null) {
+    if (mark === null || !courseCodeFinal) {
+      addIssueRow({
+        rowNo: index + 2,
+        studentId: studentIdRaw,
+        name,
+        mark: markValue,
+        reason: "Missing mark",
+        reasonCode: "missing_mark",
+      });
       skippedMissing += 1;
       continue;
+    }
+
+    let studentId = studentIdRaw;
+    let matchedByName = false;
+    if (!studentId) {
+      if (!nameKey) {
+        addIssueRow({
+          rowNo: index + 2,
+          studentId: "",
+          name,
+          mark: markValue,
+          reason: "Missing student ID and name",
+          reasonCode: "missing_identifier",
+        });
+        skippedMissing += 1;
+        continue;
+      }
+      const matches = studentsByName.get(nameKey) ?? [];
+      if (matches.length === 1) {
+        studentId = String(matches[0].studentId ?? "").trim();
+        matchedByName = true;
+      } else if (matches.length === 0) {
+        addIssueRow({
+          rowNo: index + 2,
+          studentId: "",
+          name,
+          mark: markValue,
+          reason: "Name not found in existing students",
+          reasonCode: "name_not_found",
+        });
+        skippedMissing += 1;
+        continue;
+      } else {
+        const ids = matches
+          .map((student) => String(student.studentId ?? "").trim())
+          .filter(Boolean)
+          .join(", ");
+        addIssueRow({
+          rowNo: index + 2,
+          studentId: "",
+          name,
+          mark: markValue,
+          reason: ids ? `Name matches multiple students (${ids})` : "Name matches multiple students",
+          reasonCode: "name_ambiguous",
+        });
+        skippedMissing += 1;
+        continue;
+      }
     }
 
     let student = studentMap.get(studentId);
@@ -484,15 +719,34 @@ async function parseNewResults({
           incomingName: name ?? "",
           reason: incomingName ? "name_mismatch" : "missing_name",
         });
+        addIssueRow({
+          rowNo: index + 2,
+          studentId,
+          name,
+          mark: markValue,
+          reason: "Name does not match existing student ID",
+          reasonCode: "name_mismatch",
+        });
         continue;
       }
     }
 
     if (!student) {
+      if (matchedByName) {
+        addIssueRow({
+          rowNo: index + 2,
+          studentId,
+          name,
+          mark: markValue,
+          reason: "Name matched but student ID not found",
+          reasonCode: "name_not_found",
+        });
+        skippedMissing += 1;
+        continue;
+      }
       student = {
         studentId,
         name,
-        ic: "",
         intake: "",
         intakeYear: "",
         intakeMonth: "",
@@ -502,7 +756,7 @@ async function parseNewResults({
       if (!name) missingNameNewStudents += 1;
     } else if (name) {
       const currentName = String(student.name ?? "").trim();
-      if (!currentName || currentName !== name) {
+      if (!currentName) {
         student = { ...student, name };
         studentMap.set(studentId, student);
         updatedStudents.push(student);
@@ -566,8 +820,10 @@ async function parseNewResults({
     skippedDuplicates,
     missingNameNewStudents,
     skippedMismatch,
-    mismatchedExisting,
-  };
+      mismatchedExisting,
+      issueRows,
+      issueSummary,
+    };
 }
 
 export async function previewNewResults({ file, session, courseCode, gradeScale }) {
@@ -582,6 +838,8 @@ export async function previewNewResults({ file, session, courseCode, gradeScale 
     missingNameNewStudents,
     skippedMismatch,
     mismatchedExisting,
+    issueRows,
+    issueSummary,
   } = await parseNewResults({ file, session, courseCode, gradeScale });
 
   const affectedMap = new Map();
@@ -608,6 +866,8 @@ export async function previewNewResults({ file, session, courseCode, gradeScale 
     missingNameNewStudents,
     skippedMismatch,
     mismatchedExisting,
+    issueRows,
+    issueSummary,
     affectedStudents: [...affectedMap.values()].sort((a, b) => a.studentId.localeCompare(b.studentId)),
   };
 }
@@ -634,6 +894,8 @@ export async function uploadNewResults({
     missingNameNewStudents,
     skippedMismatch,
     mismatchedExisting,
+    issueRows,
+    issueSummary,
   } = await parseNewResults({ file, session, courseCode: fixedCourseCode, gradeScale });
 
   const selectedSet = selectedStudentIds ? new Set(selectedStudentIds) : null;
@@ -649,7 +911,16 @@ export async function uploadNewResults({
     : updatedStudents;
 
   logFn(`Rows read: ${parsed.data.length}`);
-  logFn(`Rows skipped (missing ID/Mark): ${skippedMissing}`);
+  logFn(`Rows with issues: ${issueRows.length}`);
+  if (issueRows.length && issueSummary) {
+    if (issueSummary.missing_mark) logFn(`- Missing mark: ${issueSummary.missing_mark}`);
+    if (issueSummary.missing_identifier) logFn(`- Missing ID + name: ${issueSummary.missing_identifier}`);
+    if (issueSummary.name_not_found) logFn(`- Name not found: ${issueSummary.name_not_found}`);
+    if (issueSummary.name_ambiguous) logFn(`- Name matches multiple students: ${issueSummary.name_ambiguous}`);
+    if (issueSummary.name_mismatch) logFn(`- Name mismatch with ID: ${issueSummary.name_mismatch}`);
+  } else if (skippedMissing) {
+    logFn(`Rows skipped (missing ID/Name/Mark): ${skippedMissing}`);
+  }
   if (skippedMismatch) {
     logFn(`Rows skipped (ID+Name mismatch with existing): ${skippedMismatch}`);
     logFn(`Mismatched rows (first 10):`);
@@ -696,7 +967,6 @@ export async function uploadNewResults({
       cgpaUpdates.push({
         studentId,
         name: "",
-        ic: "",
         intake: "",
         intakeYear: "",
         intakeMonth: "",
@@ -705,6 +975,10 @@ export async function uploadNewResults({
     }
   }
   if (cgpaUpdates.length) await upsertMany(STORES.students, cgpaUpdates);
+
+  if (filteredStudentIds.size) {
+    await resequenceSemestersForStudents([...filteredStudentIds]);
+  }
 
   return { selectedCount: selectedSet ? filteredStudentIds.size : filteredResults.length };
 }

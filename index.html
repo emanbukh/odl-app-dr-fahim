@@ -511,7 +511,7 @@
         background: none;
         border: none;
         padding: 0;
-        color: var(--accent-2);
+        color: var(--ink);
         cursor: pointer;
         font: inherit;
       }
@@ -890,6 +890,85 @@
         background: var(--accent);
         border-color: var(--accent-2);
         color: var(--ink);
+      }
+
+      .uniform-control {
+        width: 100%;
+        min-height: 36px;
+      }
+
+      .uniform-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        min-height: 36px;
+      }
+
+      .student-filter-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .student-filter-grid .field,
+      .student-filter-grid .field-wide {
+        grid-column: span 1;
+        min-width: 0;
+      }
+
+      .student-filter-grid input,
+      .student-filter-grid select {
+        width: 100%;
+        min-height: 36px;
+      }
+
+      .student-status-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+
+      .student-status-row .filter-chip-group {
+        display: flex;
+        gap: 8px;
+        flex-wrap: nowrap;
+      }
+
+      .student-bulk-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 10px;
+        align-items: center;
+      }
+
+      #studentListCard .student-select-col {
+        display: none;
+      }
+
+      #studentListCard.selection-mode .student-select-col {
+        display: table-cell;
+      }
+
+      #studentListCard #studentBulkActions {
+        display: none;
+      }
+
+      #studentListCard.selection-mode #studentBulkActions {
+        display: grid;
+      }
+
+      .status-chip {
+        margin-left: 6px;
+        font-weight: 600;
+      }
+
+      .status-chip.suspended {
+        background: #fee2e2;
+        color: #b42318;
+        border: 1px solid rgba(180, 35, 24, 0.35);
       }
 
       .flag-tag {
@@ -1318,12 +1397,16 @@
         .enrollment-list-card { grid-column: span 12; }
         .enrollment-course-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         .field, .field-wide { grid-column: span 12; }
+        .student-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
 
       @media (max-width: 720px) {
         header { align-items: flex-start; }
         .stat { grid-column: span 12; }
         .enrollment-course-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .student-filter-grid { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+        .student-status-row { flex-wrap: wrap; }
+        .student-status-row .filter-chip-group { flex-wrap: wrap; }
       }
     </style>
 
@@ -1404,7 +1487,7 @@
           <div class="card stat fade-up delay-3">
             <h3>Incomplete Student Info</h3>
             <div class="value" id="studentsIncomplete">--</div>
-            <div class="trend">Missing IC or ID</div>
+            <div class="trend">Missing name or ID</div>
             <button class="btn secondary small" type="button" id="btnViewIncomplete">View list</button>
           </div>
           <div class="card stat fade-up delay-4">
@@ -1543,7 +1626,7 @@
               <button class="btn" id="btnImportImports">Import</button>
             </div>
             <p class="muted">
-              Expected columns include: ID, Name, IC, Intake, CourseCode, Title, Credits, Session,
+              Expected columns include: ID, Name, Intake, CourseCode, Title, Credits, Session,
               Semester, Mark, Letter, Point, GradePoints, PassedCourse, CreditsEarned.
             </p>
             <h3 class="card-title" style="margin-top: 10px;"><span>Log</span></h3>
@@ -1558,9 +1641,12 @@
             <div class="import-row">
                 <input type="file" id="studentCsvFile" accept=".csv" />
                 <button class="btn" id="btnImportStudents">Import</button>
+                <button class="btn secondary" id="btnDownloadMissingStudents" type="button" disabled>
+                  Download Issues Report
+                </button>
               </div>
               <p class="muted">
-                Required columns: StudentID, Name, Intake (YYYY/MM). Optional: IC.
+                Required columns: StudentID, Name, Intake (YYYY/MM).
                 Import opens a preview popup to confirm New / Duplicate rows and choose Update or Skip for
               duplicate-name conflicts.
             </p>
@@ -1595,9 +1681,13 @@
               <input type="file" id="newResultFile" accept=".csv" />
               <button class="btn secondary" id="btnPreviewResults">Preview</button>
               <button class="btn" id="btnUploadNewResults">Upload</button>
+              <button class="btn secondary" id="btnDownloadResultIssues" type="button" disabled>
+                Download Issues Report
+              </button>
             </div>
             <p class="muted">
-              Expected columns: Student ID, Full Name, Mark. Session format is YYYY/MM (month 02 or 09).
+              Expected columns: Student ID or Full Name, Mark. Names must match existing students if ID is missing.
+              Session format is YYYY/MM (month 02 or 09).
             </p>
             <div class="muted">
               Example template: <a href="./example.csv" download>Download example.csv</a>
@@ -1654,11 +1744,15 @@
 
       <section class="tab-panel" id="panel-students" role="tabpanel">
         <div class="grid">
-          <div class="card fade-up delay-2" style="grid-column: span 12;">
-              <div class="card-title">
-                <h2>Student List</h2>
+          <div class="card fade-up delay-2" id="studentListCard" style="grid-column: span 12;">
+            <div class="card-title">
+              <h2>Student List</h2>
+              <div class="form-actions">
                 <span class="chip">Slip Access</span>
+                <button class="btn secondary small" type="button" id="btnOpenStudentAdd">Add Student</button>
+                <button class="btn small" type="button" id="btnToggleSuspendMode">Suspend Student</button>
               </div>
+            </div>
               <div class="form-actions" style="margin-bottom: 12px;">
                 <button class="btn secondary small" type="button" id="btnConfirmResultSlips">
                   Confirm Result Slips
@@ -1669,30 +1763,61 @@
                 </button>
                 <span class="chip" id="enrollmentSlipConfirmStatus">Enrollment: Not confirmed</span>
               </div>
-              <div class="filter-row" style="margin-bottom: 12px;">
+              <div class="filter-row student-filter-grid" style="margin-bottom: 12px;">
                 <div class="field field-wide">
                   <label for="studentListSearch">Search</label>
-                  <input id="studentListSearch" type="search" placeholder="Search by Student ID or Name" />
+                  <input
+                    id="studentListSearch"
+                    class="uniform-control"
+                    type="search"
+                    placeholder="Search by Student ID or Name"
+                  />
                 </div>
                 <div class="field">
                   <label for="studentListIntake">Intake</label>
-                  <select id="studentListIntake">
+                  <select id="studentListIntake" class="uniform-control">
                     <option value="">All intakes</option>
                   </select>
                 </div>
                 <div class="field">
-                  <label for="studentListStatus">Status</label>
-                  <select id="studentListStatus">
+                  <label for="studentListStatus">Results</label>
+                  <select id="studentListStatus" class="uniform-control">
                     <option value="">All statuses</option>
                     <option value="new">New only</option>
                     <option value="has-results">Has results</option>
                   </select>
                 </div>
               </div>
+              <div class="student-status-row" style="margin-bottom: 12px;">
+                <label>Student Status</label>
+                <div class="filter-chip-group" id="studentStatusFilters">
+                  <button class="filter-chip active" type="button" data-status="">All</button>
+                  <button class="filter-chip" type="button" data-status="Active">Active</button>
+                  <button class="filter-chip" type="button" data-status="Suspended">Suspended</button>
+                  <button class="filter-chip" type="button" data-status="Terminated">Terminated</button>
+                  <button class="filter-chip" type="button" data-status="Deferment">Deferment</button>
+                  <button class="filter-chip" type="button" data-status="Completed">Completed</button>
+                </div>
+              </div>
+              <div class="form-actions student-bulk-grid" id="studentBulkActions" style="margin-bottom: 12px;">
+                <span class="chip uniform-chip" id="studentSelectionCount">0 selected</span>
+                <button class="btn secondary small uniform-control" type="button" id="btnClearStudentSelection">
+                  Clear selection
+                </button>
+                <button class="btn secondary small uniform-control" type="button" id="btnBulkActivate">
+                  Activate Selected
+                </button>
+                <button class="btn small uniform-control" type="button" id="btnBulkSuspend">
+                  Suspend Selected
+                </button>
+              </div>
               <div id="studentListEmpty" class="empty">No students yet. Import results or students to begin.</div>
               <table id="studentListTable" style="display: none; margin-top: 12px;">
                 <thead>
                   <tr>
+                    <th class="student-select-col" style="width: 36px;">
+                      <input type="checkbox" id="studentSelectAllPage" aria-label="Select all on page" />
+                    </th>
                     <th>Student ID</th>
                     <th>Name</th>
                     <th>Actions</th>
@@ -1778,7 +1903,11 @@
             <div class="card fade-up delay-3" style="grid-column: span 12;">
               <div class="card-title">
                 <h2>Result Listing</h2>
-                <span class="chip">Filtered</span>
+                <div class="form-actions">
+                  <button class="btn secondary small" type="button" id="btnExportResultsCsv">Export CSV</button>
+                  <button class="btn secondary small" type="button" id="btnExportResultsXlsx">Export XLSX</button>
+                  <span class="chip">Filtered</span>
+                </div>
               </div>
               <div class="form-actions" id="courseDetailHeader" style="display: none; margin-bottom: 12px;">
                 <button class="btn secondary small" type="button" id="btnBackToCourseList">Back to course list</button>
@@ -1863,7 +1992,6 @@
                   <tr>
                     <th>Student ID</th>
                     <th>Name</th>
-                    <th>IC</th>
                     <th>Intake</th>
                     <th>Action</th>
                   </tr>
@@ -2238,12 +2366,12 @@
     </div>
 
     <div class="modal" id="resultPreviewModal" aria-hidden="true">
-      <div class="modal-card">
-        <div class="modal-header">
-          <div>
-            <h3 class="slip-title" style="margin: 0;">Verify Upload</h3>
-            <div class="muted">Select students to update</div>
-          </div>
+        <div class="modal-card">
+          <div class="modal-header">
+            <div>
+              <h3 class="slip-title" style="margin: 0;">Verify Upload</h3>
+              <div class="muted">Select students to update</div>
+            </div>
           <div class="form-actions">
             <button class="btn secondary" type="button" id="btnClosePreview">Close</button>
             <button class="btn secondary" type="button" id="btnSelectNonePreview">Select None</button>
@@ -2268,6 +2396,27 @@
           </thead>
           <tbody id="resultPreviewBody"></tbody>
         </table>
+        <div id="resultPreviewSimilarWrap" class="card" style="display: none; margin-top: 12px;">
+          <div class="card-title">
+            <h2>Potential Name Matches</h2>
+            <span class="chip" id="resultPreviewSimilarCount">0</span>
+          </div>
+          <div class="muted">
+            These rows were skipped due to name mismatch but look similar. Review the comparison before fixing source data.
+          </div>
+          <table style="margin-top: 8px;">
+            <thead>
+              <tr>
+                <th>Row</th>
+                <th>Student ID</th>
+                <th>Uploaded Name</th>
+                <th>Existing Name</th>
+                <th>Similarity</th>
+              </tr>
+            </thead>
+            <tbody id="resultPreviewSimilarBody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -2328,14 +2477,71 @@
             <input id="editStudentName" type="text" />
           </div>
           <div class="field">
-            <label for="editStudentIc">IC</label>
-            <input id="editStudentIc" type="text" />
-          </div>
-          <div class="field">
             <label for="editStudentIntake">Intake</label>
             <input id="editStudentIntake" type="text" />
           </div>
         </div>
+      </div>
+    </div>
+
+    <div class="modal" id="studentAddModal" aria-hidden="true">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <h3 class="slip-title" style="margin: 0;">Add Student</h3>
+            <div class="muted">Register a student manually.</div>
+          </div>
+          <div class="form-actions">
+            <button class="btn secondary" type="button" id="btnCloseStudentAdd">Close</button>
+          </div>
+        </div>
+        <form id="studentAddForm">
+          <div class="form-grid">
+            <div class="field">
+              <label for="studentAddId">Student ID</label>
+              <input
+                id="studentAddId"
+                name="studentAddId"
+                type="text"
+                placeholder="YYYY.MM.XXX.DBA.ODL or T.YYYY.MM.XXX.DBA.ODL"
+                required
+              />
+              <div class="inline-toggle">
+                <label>
+                  <input type="checkbox" id="studentAddAutoTempId" />
+                  Auto-generate temporary ID (T.YYYY.MM.XXX.DBA.ODL)
+                </label>
+              </div>
+            </div>
+            <div class="field field-wide">
+              <label for="studentAddName">Name</label>
+              <input id="studentAddName" name="studentAddName" type="text" placeholder="Full name" required />
+            </div>
+            <div class="field">
+              <label for="studentAddIc">IC (Optional)</label>
+              <input id="studentAddIc" name="studentAddIc" type="text" placeholder="Optional" />
+            </div>
+            <div class="field">
+              <label for="studentAddStatus">Status</label>
+              <select id="studentAddStatus" name="studentAddStatus">
+                <option value="Active" selected>Active</option>
+                <option value="Suspended">Suspended</option>
+                <option value="Terminated">Terminated</option>
+                <option value="Deferment">Deferment</option>
+                <option value="Completed">Completed</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="studentAddIntake">Intake (YYYY/MM)</label>
+              <input id="studentAddIntake" name="studentAddIntake" type="text" placeholder="2026/02" />
+            </div>
+          </div>
+          <div class="form-actions" style="margin-top: 12px;">
+            <button class="btn" type="submit" id="btnStudentAdd">Add Student</button>
+            <button class="btn secondary" type="button" id="btnStudentAddReset">Reset</button>
+            <span class="muted" id="studentAddStatusMessage"> </span>
+          </div>
+        </form>
       </div>
     </div>
 
@@ -2361,6 +2567,7 @@
             <div class="form-actions">
               <button class="btn secondary small" type="button" id="btnProfileResultSlip">Result Slip</button>
               <button class="btn secondary small" type="button" id="btnProfileEnrollmentSlip">Enrollment Slip</button>
+              <button class="btn secondary small" type="button" id="btnProfileRealign">Realign Semesters</button>
                 <button class="btn secondary small" type="button" id="btnProfileEdit">Save</button>
               <button class="btn secondary small" type="button" id="btnProfileDelete">Delete</button>
             </div>
@@ -2465,11 +2672,20 @@
           </div>
           <div class="mark-edit-row">
             <span>Session</span>
-            <input id="addResultSession" class="mark-edit-input" type="text" placeholder="YYYY/MM" />
+            <select id="addResultSession" class="mark-edit-input"></select>
           </div>
           <div class="mark-edit-row">
             <span>Semester</span>
-            <input id="addResultSemester" class="mark-edit-input" type="number" min="1" step="1" />
+            <input
+              id="addResultSemester"
+              class="mark-edit-input"
+              type="number"
+              min="1"
+              step="1"
+              readonly
+              aria-readonly="true"
+              title="Auto-calculated from session"
+            />
           </div>
           <div class="mark-edit-row">
             <span>Mark</span>
@@ -2500,6 +2716,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script type="module" src="./app/main.js"></script>
     <footer class="app-footer">Developed by MFR 2026</footer>
   </body>

@@ -98,7 +98,6 @@ function buildPortalExport({ students, courses, results }) {
   }
   const missing = {
     studentName: 0,
-    studentIc: 0,
     studentIntake: 0,
     resultStudentId: 0,
     resultCourseCode: 0,
@@ -109,7 +108,6 @@ function buildPortalExport({ students, courses, results }) {
 
   for (const student of students) {
     if (countMissing(student?.name)) missing.studentName += 1;
-    if (countMissing(student?.ic)) missing.studentIc += 1;
     if (countMissing(student?.intake)) missing.studentIntake += 1;
   }
 
@@ -131,7 +129,7 @@ function buildPortalExport({ students, courses, results }) {
       totalResults: results.length,
       missing,
     },
-    students,
+    students: students.map(({ ic, ...rest }) => rest),
     courses,
     results,
   };
@@ -179,7 +177,6 @@ export function initPortalExport() {
         appendLog(elPortalExportLog, `Results: ${payload.stats.totalResults}`);
         appendLog(elPortalExportLog, "Missing data summary:");
         appendLog(elPortalExportLog, `- Missing student name: ${payload.stats.missing.studentName}`);
-        appendLog(elPortalExportLog, `- Missing student IC: ${payload.stats.missing.studentIc}`);
         appendLog(elPortalExportLog, `- Missing student intake: ${payload.stats.missing.studentIntake}`);
         appendLog(elPortalExportLog, `- Missing result student ID: ${payload.stats.missing.resultStudentId}`);
         appendLog(elPortalExportLog, `- Missing result course code: ${payload.stats.missing.resultCourseCode}`);

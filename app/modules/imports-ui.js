@@ -7,6 +7,25 @@ function appendLog(el, msg) {
   el.textContent += `${msg}\n`;
 }
 
+function escapeCsv(value) {
+  const s = String(value ?? "");
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function downloadCsv(fileName, rows) {
+  const csv = rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function initImports({ onDataChanged }) {
   const elFileImports = document.getElementById("csvFileImports");
   const btnImportImports = document.getElementById("btnImportImports");
@@ -19,16 +38,134 @@ export function initImports({ onDataChanged }) {
   const btnUploadNewResults = document.getElementById("btnUploadNewResults");
   const elNewResultLog = document.getElementById("newResultLog");
   const btnPreviewResults = document.getElementById("btnPreviewResults");
+  const btnDownloadResultIssues = document.getElementById("btnDownloadResultIssues");
   const elPreviewModal = document.getElementById("resultPreviewModal");
   const elPreviewBody = document.getElementById("resultPreviewBody");
   const elPreviewTable = document.getElementById("resultPreviewTable");
   const elPreviewEmpty = document.getElementById("resultPreviewEmpty");
   const elPreviewCount = document.getElementById("resultPreviewCount");
+  const elResultPreviewSimilarWrap = document.getElementById("resultPreviewSimilarWrap");
+  const elResultPreviewSimilarCount = document.getElementById("resultPreviewSimilarCount");
+  const elResultPreviewSimilarBody = document.getElementById("resultPreviewSimilarBody");
   const btnSelectAllPreview = document.getElementById("btnSelectAllPreview");
   const btnSelectNonePreview = document.getElementById("btnSelectNonePreview");
   const btnConfirmPreview = document.getElementById("btnConfirmPreview");
   const btnClosePreview = document.getElementById("btnClosePreview");
   let previewCache = null;
+  const RESULT_NAME_SIMILARITY_THRESHOLD = 0.75;
+  const RESULT_NAME_SKIP_TOKENS = new Set(["bin", "binti", "bt", "bte", "binte"]);
+
+  const normalizeNameForCompare = (value) => {
+    const normalized = String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!normalized) return "";
+    return normalized
+      .split(" ")
+      .filter((token) => token && !RESULT_NAME_SKIP_TOKENS.has(token))
+      .join(" ")
+      .trim();
+  };
+
+  const levenshteinDistance = (a, b) => {
+    if (a === b) return 0;
+    const aLen = a.length;
+    const bLen = b.length;
+    if (aLen === 0) return bLen;
+    if (bLen === 0) return aLen;
+    const prev = Array.from({ length: bLen + 1 }, (_, i) => i);
+    const curr = new Array(bLen + 1).fill(0);
+    for (let i = 1; i <= aLen; i += 1) {
+      curr[0] = i;
+      const aChar = a.charAt(i - 1);
+      for (let j = 1; j <= bLen; j += 1) {
+        const cost = aChar === b.charAt(j - 1) ? 0 : 1;
+        curr[j] = Math.min(
+          prev[j] + 1,
+          curr[j - 1] + 1,
+          prev[j - 1] + cost
+        );
+      }
+      for (let j = 0; j <= bLen; j += 1) {
+        prev[j] = curr[j];
+      }
+    }
+    return prev[bLen];
+  };
+
+  const nameSimilarity = (a, b) => {
+    const left = normalizeNameForCompare(a);
+    const right = normalizeNameForCompare(b);
+    if (!left || !right) return 0;
+    const maxLen = Math.max(left.length, right.length);
+    if (!maxLen) return 0;
+    const distance = levenshteinDistance(left, right);
+    return 1 - distance / maxLen;
+  };
+
+  const renderSimilarMismatches = (preview) => {
+    if (!elResultPreviewSimilarWrap || !elResultPreviewSimilarBody || !elResultPreviewSimilarCount) return;
+    const mismatches = preview?.mismatchedExisting ?? [];
+    const similarRows = [];
+    for (const row of mismatches) {
+      const incoming = row.incomingName ?? "";
+      const existing = row.existingName ?? "";
+      const score = nameSimilarity(incoming, existing);
+      if (score >= RESULT_NAME_SIMILARITY_THRESHOLD) {
+        similarRows.push({
+          rowNo: row.rowNo ?? "",
+          studentId: row.studentId ?? "",
+          incoming,
+          existing,
+          score,
+        });
+      }
+    }
+
+    if (!similarRows.length) {
+      elResultPreviewSimilarWrap.style.display = "none";
+      elResultPreviewSimilarBody.textContent = "";
+      elResultPreviewSimilarCount.textContent = "0";
+      return;
+    }
+
+    elResultPreviewSimilarWrap.style.display = "block";
+    elResultPreviewSimilarBody.textContent = "";
+    elResultPreviewSimilarCount.textContent = String(similarRows.length);
+    for (const row of similarRows) {
+      const tr = document.createElement("tr");
+
+      const tdRow = document.createElement("td");
+      tdRow.textContent = String(row.rowNo ?? "-");
+      tr.appendChild(tdRow);
+
+      const tdId = document.createElement("td");
+      tdId.textContent = row.studentId || "-";
+      tr.appendChild(tdId);
+
+      const tdIncoming = document.createElement("td");
+      tdIncoming.textContent = row.incoming || "-";
+      tr.appendChild(tdIncoming);
+
+      const tdExisting = document.createElement("td");
+      tdExisting.textContent = row.existing || "-";
+      tr.appendChild(tdExisting);
+
+      const tdScore = document.createElement("td");
+      tdScore.textContent = `${Math.round(row.score * 100)}%`;
+      tr.appendChild(tdScore);
+
+      elResultPreviewSimilarBody.appendChild(tr);
+    }
+  };
+  const updateResultIssueButton = () => {
+    if (!btnDownloadResultIssues) return;
+    const issueRows = previewCache?.preview?.issueRows ?? [];
+    btnDownloadResultIssues.disabled = issueRows.length === 0;
+  };
 
   const loadCourses = async () => {
     if (!elNewResultCourse) return;
@@ -80,6 +217,8 @@ export function initImports({ onDataChanged }) {
 
         const preview = await previewNewResults({ file, session, courseCode });
         previewCache = { preview, session, courseCode, file };
+        updateResultIssueButton();
+        renderSimilarMismatches(preview);
 
         if (elPreviewCount) {
           elPreviewCount.textContent = String(preview.affectedStudents.length);
@@ -102,6 +241,25 @@ export function initImports({ onDataChanged }) {
               `- Row ${row.rowNo}: ${row.studentId} | existing="${row.existingName}" vs uploaded="${row.incomingName}"`
             );
           });
+        }
+        if (preview.issueRows?.length) {
+          appendLog(elNewResultLog, `Issue rows detected: ${preview.issueRows.length}`);
+          if (preview.issueSummary?.missing_mark) {
+            appendLog(elNewResultLog, `- Missing mark: ${preview.issueSummary.missing_mark}`);
+          }
+          if (preview.issueSummary?.missing_identifier) {
+            appendLog(elNewResultLog, `- Missing ID + name: ${preview.issueSummary.missing_identifier}`);
+          }
+          if (preview.issueSummary?.name_not_found) {
+            appendLog(elNewResultLog, `- Name not found: ${preview.issueSummary.name_not_found}`);
+          }
+          if (preview.issueSummary?.name_ambiguous) {
+            appendLog(elNewResultLog, `- Name matches multiple students: ${preview.issueSummary.name_ambiguous}`);
+          }
+          if (preview.issueSummary?.name_mismatch) {
+            appendLog(elNewResultLog, `- Name mismatch with ID: ${preview.issueSummary.name_mismatch}`);
+          }
+          appendLog(elNewResultLog, "Use Download Issues Report for details.");
         }
 
         if (!preview.affectedStudents.length) {
@@ -148,12 +306,34 @@ export function initImports({ onDataChanged }) {
         }
       } catch (e) {
         appendLog(elNewResultLog, `ERROR: ${e.message ?? e}`);
+        renderSimilarMismatches({ mismatchedExisting: [] });
       }
   };
 
   if (btnPreviewResults) {
     btnPreviewResults.addEventListener("click", async () => {
       await openPreview();
+    });
+  }
+
+  if (btnDownloadResultIssues) {
+    btnDownloadResultIssues.addEventListener("click", () => {
+      const issueRows = previewCache?.preview?.issueRows ?? [];
+      if (!issueRows.length) {
+        appendLog(elNewResultLog, "No issue rows to export. Run preview first.");
+        return;
+      }
+      const header = ["Row", "StudentID", "Name", "Mark", "Reason"];
+      const rows = issueRows.map((row) => [
+        row.rowNo ?? "",
+        row.studentId ?? "",
+        row.name ?? "",
+        row.mark ?? "",
+        row.reason ?? "",
+      ]);
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadCsv(`result-issues-${stamp}.csv`, [header, ...rows]);
+      appendLog(elNewResultLog, `Issues report downloaded (${rows.length} row(s)).`);
     });
   }
 
@@ -217,6 +397,7 @@ export function initImports({ onDataChanged }) {
         });
         if (onDataChanged) await onDataChanged();
         previewCache = null;
+        updateResultIssueButton();
         if (elPreviewModal) {
           elPreviewModal.classList.remove("active");
           elPreviewModal.setAttribute("aria-hidden", "true");
@@ -233,6 +414,9 @@ export function initImports({ onDataChanged }) {
         elPreviewModal.classList.remove("active");
         elPreviewModal.setAttribute("aria-hidden", "true");
       }
+      previewCache = null;
+      updateResultIssueButton();
+      renderSimilarMismatches({ mismatchedExisting: [] });
     });
   }
 

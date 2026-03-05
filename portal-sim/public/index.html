@@ -36,21 +36,17 @@
   <body>
     <div class="shell">
       <h1>ODL Student Portal (Simulation)</h1>
-      <p class="muted">Login with Student ID + IC to request OTP. Use OTP from server console.</p>
+      <p class="muted">Login with Student ID to request OTP. Use OTP from server console.</p>
 
       <div class="card" id="loginCard">
         <div class="grid">
-          <div class="field" style="grid-column: span 4;">
+          <div class="field" style="grid-column: span 6;">
             <label for="studentId">Student ID</label>
             <input id="studentId" type="text" />
           </div>
-          <div class="field" style="grid-column: span 4;">
+          <div class="field" style="grid-column: span 6;">
             <label for="studentName">Full Name (optional)</label>
             <input id="studentName" type="text" />
-          </div>
-          <div class="field" style="grid-column: span 4;">
-            <label for="studentIc">IC</label>
-            <input id="studentIc" type="password" />
           </div>
         </div>
         <div style="display:flex; gap:10px; margin-top: 12px;">
@@ -139,10 +135,9 @@
         try {
           const studentId = document.getElementById("studentId").value;
           const name = document.getElementById("studentName").value;
-          const ic = document.getElementById("studentIc").value;
           const res = await api("/api/auth/request-otp", {
             method: "POST",
-            body: JSON.stringify({ studentId, name, ic }),
+            body: JSON.stringify({ studentId, name }),
           });
           loginLog.textContent = `OTP sent. Demo OTP: ${res.demoOtp}`;
         } catch (e) {

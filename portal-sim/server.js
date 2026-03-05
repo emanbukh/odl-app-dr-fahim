@@ -172,11 +172,10 @@ app.post("/api/admin/import-portal-export", async (req, res) => {
 
     const insertTx = db.transaction(() => {
       for (const student of payload.students) {
-        const ic_hash = hashIc(student.ic);
         insertStudent.run({
           student_id: String(student.studentId ?? "").trim(),
           name: String(student.name ?? "").trim(),
-          ic_hash,
+          ic_hash: null,
           intake: String(student.intake ?? "").trim(),
           intake_year: String(student.intakeYear ?? "").trim(),
           intake_month: String(student.intakeMonth ?? "").trim(),
@@ -238,19 +237,15 @@ app.get("/api/admin/update-status", (_req, res) => {
 });
 
 app.post("/api/auth/request-otp", (req, res) => {
-  const { studentId, name, ic } = req.body ?? {};
+  const { studentId, name } = req.body ?? {};
   const id = String(studentId ?? "").trim();
-  const icValue = String(ic ?? "").trim();
   const nameValue = String(name ?? "").trim().toLowerCase();
-  if (!id || !icValue) return res.status(400).json({ error: "Student ID and IC are required." });
+  if (!id) return res.status(400).json({ error: "Student ID is required." });
 
   const student = db.prepare("SELECT * FROM students WHERE student_id = ?").get(id);
   if (!student) return res.status(404).json({ error: "Student not found." });
   if (student.name && nameValue && String(student.name).trim().toLowerCase() !== nameValue) {
     return res.status(401).json({ error: "Name does not match." });
-  }
-  if (!student.ic_hash || hashIc(icValue) !== student.ic_hash) {
-    return res.status(401).json({ error: "IC does not match." });
   }
 
   const otp = String(Math.floor(100000 + Math.random() * 900000));

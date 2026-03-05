@@ -65,7 +65,6 @@ export function buildBackupCsv({ students, courses, results }) {
   const header = [
     "ID",
     "Name",
-    "IC",
     "Intake",
     "IntakeYear",
     "IntakeMonth",
@@ -117,7 +116,6 @@ export function buildBackupCsv({ students, courses, results }) {
     return [
       studentId,
       student.name ?? "",
-      student.ic ?? "",
       student.intake ?? "",
       student.intakeYear ?? "",
       student.intakeMonth ?? "",
@@ -147,7 +145,6 @@ export function buildBackupCsv({ students, courses, results }) {
       return [
         String(student.studentId ?? "").trim(),
         student.name ?? "",
-        student.ic ?? "",
         student.intake ?? "",
         student.intakeYear ?? "",
         student.intakeMonth ?? "",

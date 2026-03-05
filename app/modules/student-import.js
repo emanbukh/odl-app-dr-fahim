@@ -6,6 +6,25 @@ function appendLog(el, msg) {
   el.textContent += `${msg}\n`;
 }
 
+function escapeCsv(value) {
+  const s = String(value ?? "");
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function downloadCsv(fileName, rows) {
+  const csv = rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function normalizeKey(key) {
   return String(key ?? "")
     .toLowerCase()
@@ -47,7 +66,6 @@ function normalizeStudentRow(rawRow) {
     getRowValue(row, ["studentid", "id", "studentno", "matric", "matricno", "student_id"])
   ).trim();
   const name = String(getRowValue(row, ["name", "fullname", "studentname"])).trim();
-  const ic = String(getRowValue(row, ["ic", "icno", "nric", "nricno"])).trim();
   const intakeRaw = getRowValue(row, ["intake", "intakecode", "intakesession"]);
   const intakeParsed = parseIntake(intakeRaw);
 
@@ -56,7 +74,6 @@ function normalizeStudentRow(rawRow) {
   return {
     studentId,
     name,
-    ic,
     intake: intakeParsed.intake,
     intakeYear: intakeParsed.year,
     intakeMonth: intakeParsed.month,
@@ -113,14 +130,27 @@ function buildStudentImportPreview({
       getRowValue(normalizedRaw, ["studentid", "id", "studentno", "matric", "matricno", "student_id"])
     ).trim();
     const draftName = String(getRowValue(normalizedRaw, ["name", "fullname", "studentname"])).trim();
+    const draftIntake = String(
+      getRowValue(normalizedRaw, ["intake", "intakecode", "intakesession"])
+    ).trim();
 
     const candidate = normalizeStudentRow(rawRow);
     if (!candidate) {
       summary.missingRequired += 1;
+      const missing = [];
+      if (!draftId) missing.push("Student ID");
+      if (!draftName) missing.push("Name");
+      if (!draftIntake) {
+        missing.push("Intake");
+      } else if (!parseIntake(draftIntake)) {
+        missing.push("Intake format");
+      }
       rows.push({
         rowNo,
         studentId: draftId,
         name: draftName,
+        intake: draftIntake,
+        reason: missing.length ? missing.join(", ") : "Missing required fields",
         statusType: "missing_required",
         selectable: false,
         defaultChecked: false,
@@ -137,6 +167,8 @@ function buildStudentImportPreview({
         rowNo,
         studentId: candidate.studentId,
         name: candidate.name,
+        intake: candidate.intake,
+        reason: "Duplicate ID (CSV)",
         statusType: "duplicate_id_csv",
         selectable: false,
         defaultChecked: false,
@@ -145,16 +177,30 @@ function buildStudentImportPreview({
       return;
     }
     if (existingById.has(studentId)) {
+      const existingStudent = existingById.get(studentId);
+      const existingNameKey = normalizeNameKey(existingStudent?.name);
+      const existingIntakeParsed = parseIntake(existingStudent?.intake);
+      const existingIntake = existingIntakeParsed
+        ? existingIntakeParsed.intake
+        : String(existingStudent?.intake ?? "").trim();
+      const intakeDifferent = Boolean(existingIntake && candidate.intake && existingIntake !== candidate.intake);
+      const nameMatches = Boolean(nameKey && existingNameKey && nameKey === existingNameKey);
+      const allowUpdate = nameMatches && intakeDifferent;
       summary.duplicateIdExisting += 1;
       rows.push({
         rowNo,
         studentId: candidate.studentId,
         name: candidate.name,
+        intake: candidate.intake,
+        reason: allowUpdate ? "Duplicate ID (existing) - intake update" : "Duplicate ID (existing)",
         statusType: "duplicate_id_existing",
-        selectable: false,
-        defaultChecked: false,
+        selectable: allowUpdate,
+        defaultChecked: allowUpdate,
+        allowUpdate,
         candidate,
       });
+      seenIds.add(studentId);
+      if (nameKey) seenNames.set(nameKey, studentId);
       return;
     }
 
@@ -165,6 +211,8 @@ function buildStudentImportPreview({
         rowNo,
         studentId: candidate.studentId,
         name: candidate.name,
+        intake: candidate.intake,
+        reason: "Duplicate Name (CSV)",
         statusType: "duplicate_name_csv",
         selectable: false,
         defaultChecked: false,
@@ -182,6 +230,8 @@ function buildStudentImportPreview({
           rowNo,
           studentId: candidate.studentId,
           name: candidate.name,
+          intake: candidate.intake,
+          reason: `Duplicate Name (existing ID: ${existingId})`,
           statusType: "duplicate_name_existing",
           selectable: true,
           defaultChecked: false,
@@ -200,6 +250,7 @@ function buildStudentImportPreview({
       rowNo,
       studentId: candidate.studentId,
       name: candidate.name,
+      intake: candidate.intake,
       statusType: "new",
       selectable: true,
       defaultChecked: true,
@@ -216,6 +267,7 @@ function buildStudentImportPreview({
 export function initStudentImport({ onDataChanged } = {}) {
   const elFile = document.getElementById("studentCsvFile");
   const btnImport = document.getElementById("btnImportStudents");
+  const btnDownloadMissing = document.getElementById("btnDownloadMissingStudents");
   const elLog = document.getElementById("studentImportLog");
   const elPreviewModal = document.getElementById("studentImportPreviewModal");
   const elPreviewBody = document.getElementById("studentImportPreviewBody");
@@ -228,6 +280,20 @@ export function initStudentImport({ onDataChanged } = {}) {
   const btnConfirmPreview = document.getElementById("btnConfirmStudentImportPreview");
 
   let previewCache = null;
+  const reportIssueTypes = new Set([
+    "missing_required",
+    "duplicate_id_existing",
+    "duplicate_id_csv",
+    "duplicate_name_existing",
+    "duplicate_name_csv",
+  ]);
+  const updateMissingReportButton = () => {
+    if (!btnDownloadMissing) return;
+    const issueRows = previewCache?.preview?.rows?.filter(
+      (row) => reportIssueTypes.has(row.statusType)
+    );
+    btnDownloadMissing.disabled = !issueRows || issueRows.length === 0;
+  };
 
   const closePreview = () => {
     if (!elPreviewModal) return;
@@ -254,10 +320,25 @@ export function initStudentImport({ onDataChanged } = {}) {
       return;
     }
 
+    const priorityRank = (row) => {
+      if (row.statusType === "new") return 0;
+      if (row.statusType === "duplicate_id_existing" && row.allowUpdate) return 1;
+      if (row.statusType === "duplicate_name_existing") return 2;
+      return 3;
+    };
+    const orderedRows = rows
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => {
+        const rankDiff = priorityRank(a.row) - priorityRank(b.row);
+        if (rankDiff !== 0) return rankDiff;
+        return a.index - b.index;
+      })
+      ;
+
     elPreviewEmpty.style.display = "none";
     elPreviewTable.style.display = "table";
 
-    rows.forEach((row, index) => {
+    orderedRows.forEach(({ row, index: originalIndex }) => {
       const tr = document.createElement("tr");
       const tdCheck = document.createElement("td");
       let rowCheckbox = null;
@@ -265,7 +346,7 @@ export function initStudentImport({ onDataChanged } = {}) {
         rowCheckbox = document.createElement("input");
         rowCheckbox.type = "checkbox";
         rowCheckbox.checked = row.defaultChecked === true;
-        rowCheckbox.dataset.rowIndex = String(index);
+        rowCheckbox.dataset.rowIndex = String(originalIndex);
         tdCheck.appendChild(rowCheckbox);
       } else {
         tdCheck.textContent = "-";
@@ -292,7 +373,7 @@ export function initStudentImport({ onDataChanged } = {}) {
       if (row.statusType === "duplicate_name_existing") {
         const select = document.createElement("select");
         select.className = "preview-action-select";
-        select.dataset.rowIndex = String(index);
+        select.dataset.rowIndex = String(originalIndex);
         const optSkip = document.createElement("option");
         optSkip.value = "skip";
         optSkip.textContent = "Skip";
@@ -306,6 +387,8 @@ export function initStudentImport({ onDataChanged } = {}) {
           if (select.value === "update" && rowCheckbox) rowCheckbox.checked = true;
         });
         tdAction.appendChild(select);
+      } else if (row.statusType === "duplicate_id_existing" && row.allowUpdate) {
+        tdAction.textContent = "Update intake";
       } else if (row.statusType === "new") {
         tdAction.textContent = "Import";
       } else {
@@ -351,9 +434,13 @@ export function initStudentImport({ onDataChanged } = {}) {
         fileName: file.name,
         preview,
       };
+      updateMissingReportButton();
       appendLog(elLog, `Rows read: ${preview.summary.totalRows}`);
       appendLog(elLog, `New rows detected: ${preview.summary.newCount}`);
       appendLog(elLog, `Duplicate name (existing ID mismatch): ${preview.summary.duplicateNameExisting}`);
+      if (preview.summary.missingRequired) {
+        appendLog(elLog, `Missing required fields: ${preview.summary.missingRequired}`);
+      }
       appendLog(elLog, "Review the preview popup and confirm which rows to import.");
       renderPreview(preview);
       openPreview();
@@ -361,6 +448,29 @@ export function initStudentImport({ onDataChanged } = {}) {
       appendLog(elLog, `ERROR: ${e.message ?? e}`);
     }
   });
+
+  if (btnDownloadMissing) {
+    btnDownloadMissing.addEventListener("click", () => {
+      const issueRows = previewCache?.preview?.rows?.filter(
+        (row) => reportIssueTypes.has(row.statusType)
+      ) ?? [];
+      if (!issueRows.length) {
+        appendLog(elLog, "No missing/duplicate issues to export. Run import preview first.");
+        return;
+      }
+      const header = ["Row", "StudentID", "Name", "Intake", "Reason"];
+      const rows = issueRows.map((row) => [
+        row.rowNo ?? "",
+        row.studentId ?? "",
+        row.name ?? "",
+        row.intake ?? "",
+        row.reason ?? toDisplayStatus(row),
+      ]);
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadCsv(`missing-students-${stamp}.csv`, [header, ...rows]);
+      appendLog(elLog, `Missing/duplicate report downloaded (${rows.length} row(s)).`);
+    });
+  }
 
   if (btnSelectAllPreview) {
     btnSelectAllPreview.addEventListener("click", () => {
@@ -416,7 +526,31 @@ export function initStudentImport({ onDataChanged } = {}) {
             toUpdateById.set(existingStudent.studentId, {
               ...existingStudent,
               name: row.candidate.name || existingStudent.name,
-              ic: row.candidate.ic || existingStudent.ic || "",
+              intake: row.candidate.intake,
+              intakeYear: row.candidate.intakeYear,
+              intakeMonth: row.candidate.intakeMonth,
+            });
+            continue;
+          }
+
+          if (row.statusType === "duplicate_id_existing") {
+            if (!row.allowUpdate || !row.candidate) {
+              skippedConflicts += 1;
+              continue;
+            }
+            const existingStudent = existingById.get(String(row.studentId ?? "").trim());
+            if (!existingStudent) {
+              skippedConflicts += 1;
+              continue;
+            }
+            const existingNameKey = normalizeNameKey(existingStudent?.name);
+            const incomingNameKey = normalizeNameKey(row.candidate?.name);
+            if (!incomingNameKey || !existingNameKey || incomingNameKey !== existingNameKey) {
+              skippedConflicts += 1;
+              continue;
+            }
+            toUpdateById.set(existingStudent.studentId, {
+              ...existingStudent,
               intake: row.candidate.intake,
               intakeYear: row.candidate.intakeYear,
               intakeMonth: row.candidate.intakeMonth,
@@ -466,6 +600,7 @@ export function initStudentImport({ onDataChanged } = {}) {
         }
 
         previewCache = null;
+        updateMissingReportButton();
         closePreview();
       } catch (e) {
         appendLog(elLog, `ERROR: ${e.message ?? e}`);
